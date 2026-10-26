@@ -252,9 +252,29 @@ class WM:
             raise ValueError(f"outcome returned {o!r}; expected one of {OUTCOMES}")
         return o
 
-    def verify(self, record=None, all_levels: bool = True, timeout: float = VERIFY_SECONDS) -> dict:
+    def border(self, grid) -> int:
+        """Width of the HUD band ignored by non-strict comparisons."""
+        if self.hud_border is not None:
+            return self.hud_border
+        return 4 if min(np.asarray(grid).shape) >= 32 else 0
+
+    def view(self, grid, strict: bool = False) -> np.ndarray:
+        """The grid as compared: HUD border cells blanked to 255 unless strict."""
+        g = np.array(grid, dtype=np.int16, copy=True)
+        b = 0 if strict else self.border(g)
+        if b and g.ndim == 2:
+            g[:b, :] = g[-b:, :] = g[:, :b] = g[:, -b:] = 255
+        return g
+
+    def view_hash(self, grid, strict: bool = False) -> str:
+        """Hash used by expected_hashes/execute: grid_hash of view(grid, strict)."""
+        return grid_hash(self.view(grid, strict))
+
+    def verify(self, record=None, all_levels: bool = True, timeout: float = VERIFY_SECONDS,
+               strict: bool = False) -> dict:
         """Check the registered model against recorded settled transitions (this level, plus
-        earlier levels if all_levels). Channels: init (init(start)['grid'] == observed start),
+        earlier levels if all_levels). The outer HUD border (4 cells) is ignored unless
+        strict=True. Channels: init (init(start)['grid'] == observed start),
         dynamics (replay; a step is graded if the observed grid changed or the model predicted a
         change), outcome (model outcome == recorded outcome at every step). Returns
         {ok, summary, init, dynamics:{accuracy, graded, correct, first_divergence}, outcome}.
@@ -270,7 +290,7 @@ class WM:
                "outcome": {"ok": True, "mismatches": []}}
         try:
             for lv in levels:
-                self._verify_level(lv, res, deadline)
+                self._verify_level(lv, res, deadline, strict)
         except _Timeout:
             res["timeout"] = True
         d = res["dynamics"]
@@ -282,11 +302,12 @@ class WM:
         res["summary"] = self._summary(res)
         return res
 
-    def _verify_level(self, lv: Record, res: dict, deadline: float):
+    def _verify_level(self, lv: Record, res: dict, deadline: float, strict: bool):
+        v = lambda g: self.view(g, strict)
         init_ch, dyn, out_ch = res["init"], res["dynamics"], res["outcome"]
         try:
             state = self._init(lv.level_start_grid, lv.level)
-            dt = diff_text(lv.level_start_grid, state["grid"])
+            dt = diff_text(v(lv.level_start_grid), v(state["grid"]))
             if dt["n_cells"]:
                 init_ch["ok"] = False
                 init_ch["failures"].append({"level": lv.level, **dt})
@@ -317,12 +338,12 @@ class WM:
                 state, prev_after = {"grid": after.copy()}, after
                 continue
             if rec_out == "ongoing":
-                observed_change = not np.array_equal(before, after)
-                predicted_change = (pred["grid"].shape != before.shape
-                                    or not np.array_equal(pred["grid"], before))
+                vb, va, vp = v(before), v(after), v(pred["grid"])
+                observed_change = not np.array_equal(vb, va)
+                predicted_change = vp.shape != vb.shape or not np.array_equal(vp, vb)
                 if observed_change or predicted_change:
                     dyn["graded"] += 1
-                    dt = diff_text(after, pred["grid"])
+                    dt = diff_text(va, vp)
                     if dt["n_cells"] == 0:
                         dyn["correct"] += 1
                     elif dyn["first_divergence"] is None:
@@ -392,7 +413,7 @@ class WM:
         clicking the component cell nearest its centroid; biggest components first."""
         g = np.asarray(grid)
         bg = background(g)
-        hud = self.hud_border if self.hud_border is not None else (4 if min(g.shape) >= 32 else 0)
+        hud = self.border(g)
         rows, cols = g.shape
         cands = []
         for comp in components(g):
@@ -506,13 +527,14 @@ class WM:
             path.append(a)
         return path[::-1]
 
-    def validate(self, actions) -> dict:
+    def validate(self, actions, strict: bool = False) -> dict:
         """Replay actions through your model from wm.current_state(). Returns {ok (ends in
-        level_complete), final_outcome, steps:[{action, hash, outcome}], error}. Stops at the first
-        terminal outcome or model error."""
-        return self._rollout(actions, keep_grids=False)
+        level_complete), final_outcome, steps:[{action, hash, outcome}], error}; hash is
+        wm.view_hash (HUD border ignored unless strict). Stops at the first terminal outcome or
+        model error."""
+        return self._rollout(actions, keep_grids=False, strict=strict)
 
-    def _rollout(self, actions, keep_grids: bool) -> dict:
+    def _rollout(self, actions, keep_grids: bool, strict: bool = False) -> dict:
         self._need_model()
         state = self.current_state()
         steps, final, error = [], "ongoing", None
@@ -524,7 +546,7 @@ class WM:
             except Exception as e:  # noqa: BLE001
                 error = f"step {len(steps)} {action_str(a)}: {_err(e)}"
                 break
-            steps.append({"action": action_str(a), "hash": grid_hash(state["grid"]),
+            steps.append({"action": action_str(a), "hash": self.view_hash(state["grid"], strict),
                           "outcome": final})
             if keep_grids:
                 steps[-1]["grid"] = state["grid"]
@@ -533,11 +555,11 @@ class WM:
         return {"ok": error is None and final == "level_complete", "final_outcome": final,
                 "steps": steps, "error": error}
 
-    def expected_hashes(self, actions) -> list[str]:
-        """Expected grid hash after each action of a plan (see wm.grid_hash)."""
-        return [s["hash"] for s in self.validate(actions)["steps"]]
+    def expected_hashes(self, actions, strict: bool = False) -> list[str]:
+        """Expected board hash after each action of a plan; compare with wm.view_hash(observed)."""
+        return [s["hash"] for s in self.validate(actions, strict)["steps"]]
 
-    def execute(self, actions, stop_on_mismatch: bool = True) -> dict:
+    def execute(self, actions, stop_on_mismatch: bool = True, strict: bool = False) -> dict:
         """Play a plan in the REAL game one action at a time (this costs actions), checking each
         observed board against your model's prediction. Stops at the first mismatch (when
         stop_on_mismatch), a game over, a level completion or a refused action. Returns {executed,
@@ -546,7 +568,7 @@ class WM:
         if self.executor is None:
             raise RuntimeError("wm.execute is only available inside the python tool")
         actions = [norm_action(a) for a in actions]
-        expected = self._rollout(actions, keep_grids=True)["steps"]
+        expected = self._rollout(actions, keep_grids=True, strict=strict)["steps"]
         out = {"executed": 0, "mismatch_index": None, "expected_diff": None,
                "observed_outcome": "ongoing", "stop_reason": None}
         for i, a in enumerate(actions):
@@ -568,11 +590,12 @@ class WM:
             observed = np.asarray(self._rec().current_grid)
             exp = expected[i] if i < len(expected) else None
             if exp is None or exp["outcome"] != out["observed_outcome"] or \
-                    grid_hash(observed) != exp["hash"]:
+                    self.view_hash(observed, strict) != exp["hash"]:
                 if out["mismatch_index"] is None:
                     out["mismatch_index"] = i
                     out["expected_diff"] = ("model gave no prediction" if exp is None else
-                                            diff_text(exp["grid"], observed)["diff"]
+                                            diff_text(self.view(exp["grid"], strict),
+                                                      self.view(observed, strict))["diff"]
                                             or f"outcome {exp['outcome']} predicted")
                 if stop_on_mismatch:
                     out["stop_reason"] = "mismatch"

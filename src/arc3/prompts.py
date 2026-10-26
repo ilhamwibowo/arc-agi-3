@@ -28,7 +28,11 @@ OVERVIEW = """\
 
 RUNTIME = """\
 ## Variables inside every `python` call
-- `current_frame`: the latest board. `.grid` (numpy uint8 array, rows x cols), `.ascii` (letter rows), `.crop(r0, c0, r1, c1)` (a frame of the sub-rectangle, end-exclusive; use `.crop(...).ascii` to read a region), `.segmentation` (4-connected same-color objects: id, color, bbox, pixels, rotation-invariant hash, shape hash, enclosed children, plus adjacency pairs), `.step`, `.level`.
+- `current_frame`: the latest board. `.grid` (numpy uint8 array, rows x cols), `.ascii` (letter rows), `.crop(r0, c0, r1, c1)` (a frame of the sub-rectangle, end-exclusive; use `.crop(...).ascii` to read a region), `.segmentation` (below), `.step`, `.level`.
+- `current_frame.segmentation`: 4-connected same-color objects, ids in reading order (top row first, then left to right). It acts as a list: `len(seg)`, `for node in seg`, `seg[i]`, `seg.nodes`.
+  - Each node supports `node.color` and `node['color']`, `.get`, `'color' in node`, `dict(node)`. Keys: `id`, `color` (int 0-15), `letter`, `pixels` (count), `bbox` [r0, c0, r1, c1] inclusive, `cells` [(row, col), ...], `center` (row, col), `hash` (same color+shape in any 90-degree rotation), `shape_hash` (shape only), `pose_hash` (exact orientation), `rotation` (degrees from canonical; None if 4-fold symmetric), `rotational_symmetry` (1/2/4), `children` (ids of objects directly enclosed), `parent`.
+  - `seg.adjacency`: list of (id_a, id_b) for objects sharing an edge; `seg.neighbors(id)`, `seg.node_at(row, col)`, `seg.by_color(c)`, `seg.labels` (object id per cell).
+  - print(current_frame.segmentation) gives a compact object table
 - `previous_frame`: the board before the most recent action (or None).
 - `history`: list of entries with `.action`, `.frame` (board AFTER that action) and `.result`. `history[-1].frame` is `current_frame`.
 - `transitions` / `last_transition`: per-action records with `.action`, `.before_frame`, `.after_frame`, `.result`.
@@ -79,7 +83,7 @@ WORLD_MODEL = """\
 Once you understand the mechanics, let code find the shortest plan. `wm` is a global in every call:
 - Free helpers, no model needed: `wm.induce_motion()` (what each direction moves, by how much, when it was blocked), `wm.untried_actions()`, `wm.transition_graph()` (no-ops, deaths, revisited states).
 - Write `transition(state, action)` returning a NEW state dict and `outcome(state)` returning 'ongoing', 'level_complete' or 'game_over'. `state['grid']` is a numpy board; add hidden fields (counters, inventory) as extra keys and an `init=lambda grid, level: {...}` for them. `action` is a dict: test `action['action'] == 'UP'` (clicks also have 'row', 'col').
-- `wm.register(transition, outcome)` then `wm.verify()`: it replays every recorded move and reports the first divergence as 'expected->predicted @ row cols'. Fix that one and verify again until `ok`.
+- `wm.register(transition, outcome)` then `wm.verify()`: it replays every recorded move (the outer 4-cell HUD border is ignored unless `strict=True`) and reports the first divergence as 'expected->predicted @ row cols'. Fix that one and verify again until `ok`.
 - `plan = wm.plan()` searches your model for the fewest actions reaching 'level_complete' (or `wm.plan(goal=fn)`; `wm.goal_menu()` lists candidate goals). Then `wm.execute(plan['actions'])` plays it and stops at the first step where the real board differs from your prediction.
 - verify and plan cost no game actions. Score is roughly quadratic in action efficiency, so a verified model plus the planner usually beats hand-played moves. Do not hardcode per-level branches in `transition`."""
 

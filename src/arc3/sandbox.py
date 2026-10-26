@@ -30,6 +30,9 @@ import numpy as np
 from arc3.types import Action, ActionResult, ToolResult
 from arc3.wm import WM, Record
 
+# numpy>=2 prints scalars as np.int64(3); the model should see plain 3 in tool output.
+np.set_printoptions(legacy="1.25")
+
 ALLOWED_MODULES = frozenset({
     "bisect", "collections", "copy", "difflib", "fractions", "functools", "heapq", "itertools",
     "json", "math", "operator", "random", "re", "statistics", "string",

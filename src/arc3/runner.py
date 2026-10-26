@@ -99,11 +99,11 @@ class _Run:
                 log.info("keep-alive RESET #%d on %s", self.keepalive_resets, game_id)
             except Exception:
                 log.exception("keep-alive RESET failed on %s", game_id)
-            next_reset = self.clock() + self.keepalive_seconds
+            next_reset = min(self.clock() + self.keepalive_seconds, self.run_end)
             while (left := next_reset - self.clock()) > 0:
-                if self.first_action.wait(min(5.0, left)):
-                    return
                 if self.stop.is_set() or self._model_up():
+                    return
+                if self.first_action.wait(min(5.0, left)):
                     return
 
     def _model_up(self) -> bool:

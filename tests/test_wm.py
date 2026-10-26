@@ -228,3 +228,21 @@ def test_model_errors_are_reported_not_raised():
     assert not wm.plan()["found"]
     with pytest.raises(RuntimeError):
         WM(make_record([])).verify()
+
+
+def test_hud_border_ignored_unless_strict():
+    rec = make_record(WALK)
+    for i, (b, a, after, o) in enumerate(rec.transitions):   # a HUD step counter in cell (0, 0)
+        after = after.copy()
+        after[0, 0] = i + 1
+        rec.transitions[i] = (b, a, after, o)
+    wm = WM(rec, hud_border=1)
+    register(wm)
+    assert wm.verify()["ok"]
+    res = wm.verify(strict=True)
+    assert not res["ok"] and "@ r0 c0" in res["dynamics"]["first_divergence"]["diff"]
+    hashes = wm.expected_hashes(["DOWN"])
+    observed = true_step(rec.current_grid, {"action": "DOWN"})
+    observed[0, 0] = 99
+    assert hashes == [wm.view_hash(observed)]
+    assert wm.expected_hashes(["DOWN"], strict=True) != [wm.view_hash(observed, strict=True)]

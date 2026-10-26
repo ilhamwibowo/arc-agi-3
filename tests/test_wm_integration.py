@@ -58,7 +58,7 @@ def test_wm_tools_in_sandbox(tmp_path):
     s.close()
 
 
-def test_record_after_auto_reset_uses_live_grid(tmp_path):
+def test_record_built_from_session_history(tmp_path):
     s = _session(tmp_path)
     s.step(Action("UP"))
     tool = PythonTool(s)
