@@ -45,3 +45,28 @@ def test_smoke_run(tmp_path):
     assert g["scored_actions"] == 40 and g["model_calls"] == 19 and g["win_levels"] == 7
     assert g["end_reason"] == "action_cap"
     assert "<details" in out_h.read_text()
+
+
+def test_scoring_numbers():
+    from arc3 import scoring
+    assert scoring.load_baselines("ls20") == [22, 123, 73, 84, 96, 192, 186]
+    assert scoring.level_score(10, 5) == scoring.CAP
+    # level1 human 10 / agent 20 -> .25; level2 human 10 / agent 10 -> 1 (x2); total weights 1+2+3
+    assert abs(scoring.game_score([10, 10, 10], [20, 10]) - (0.25 + 2) / 6) < 1e-9
+
+
+def test_score_in_report(tmp_path):
+    write(tmp_path / "ls20" / "trace.jsonl", [
+        {"event": "start", "step": 0, "levels": 0, "win_levels": 7}]
+        + [{"event": "action", "automatic": i == 5, "step": i, "levels": 0, "state": "NOT_FINISHED"}
+           for i in range(1, 11)]
+        + [{"event": "action", "automatic": False, "step": 11, "levels": 1, "state": "NOT_FINISHED"}])
+    g = ar.analyze_run(tmp_path)["games"][0]
+    assert g["level_counts"] == [11]                    # the automatic reset counts
+    assert abs(g["score"] - (22 / 11) ** 0 * 1.15 / 28) < 1e-9   # (22/11)^2=4 -> capped 1.15, weight 1 of 28
+
+
+def test_smoke_score_zero():
+    run = ROOT / "runs/local/smoke-ollama-1"
+    if run.exists():
+        assert ar.analyze_run(run)["games"][0]["score"] == 0

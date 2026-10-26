@@ -11,6 +11,9 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from arc3 import scoring  # noqa: E402
+
 
 def read_trace(path: Path) -> list[dict]:
     events = []
@@ -37,7 +40,7 @@ def read_summary(path: Path) -> dict:
 def analyze_game(name: str, events: list[dict], summary: dict) -> dict:
     g = {"game": name, "scored_actions": 0, "resets": 0, "turns": 0, "model_calls": 0,
          "tool_calls": 0, "tool_errors": 0, "model_errors": 0, "generated_tokens": 0,
-         "prompt_tokens": 0, "cached_tokens": 0, "model_seconds": 0.0, "level_actions": [],
+         "prompt_tokens": 0, "cached_tokens": 0, "model_seconds": 0.0, "level_actions": [], "level_counts": [], "all_actions": 0,
          "timeline": [], "tools": [], "model_stats": [], "stop_reasons": {}}
     level, win, end = 0, None, {}
     for e in events:
@@ -51,10 +54,12 @@ def analyze_game(name: str, events: list[dict], summary: dict) -> dict:
             else:
                 g["scored_actions"] += 1
             idx = g["scored_actions"]
+            g["all_actions"] += 1       # resets count as actions for scoring
             new = e.get("levels", level) or 0
             died = e.get("state") == "GAME_OVER"
             if new > level:
                 g["level_actions"].append(idx)
+                g["level_counts"].append(g["all_actions"] - sum(g["level_counts"]))
             if new != level or died or e.get("automatic"):
                 g["timeline"].append({"step": e.get("step"), "action_index": idx, "level": new,
                                       "note": "level up" if new > level else
@@ -101,6 +106,8 @@ def analyze_game(name: str, events: list[dict], summary: dict) -> dict:
         per.append(i - prev)
         prev = i
     g["actions_per_level"] = per
+    g["baselines"] = scoring.load_baselines(name)
+    g["score"] = scoring.game_score(g["baselines"], g["level_counts"]) if g["baselines"] else None
     g["end_reason"] = end.get("end_reason") or summary.get("end_reason") or summary.get("error") \
         or summary.get("status") or ("no game_end (crashed or partial)" if events else "no trace")
     g["seconds"] = end.get("seconds") or summary.get("seconds")
@@ -115,6 +122,8 @@ def analyze_run(run: Path) -> dict:
     sums = ("levels_completed", "win_levels", "scored_actions", "resets", "turns", "model_calls",
             "tool_calls", "tool_errors", "generated_tokens", "prompt_tokens", "cached_tokens")
     total = {k: sum(g[k] or 0 for g in games) for k in sums}
+    scores = [g["score"] for g in games if g["score"] is not None]
+    total["score"] = sum(scores) / len(scores) if scores else None
     total["cached_fraction"] = total["cached_tokens"] / total["prompt_tokens"] if total["prompt_tokens"] else None
     secs = sum(g["model_seconds"] for g in games)
     n = sum(len(g["model_stats"]) for g in games)
@@ -122,7 +131,7 @@ def analyze_run(run: Path) -> dict:
     return {"run": str(run), "games": games, "total": total}
 
 
-COLS = [("game", "game"), ("levels", None), ("acts", "scored_actions"), ("resets", "resets"),
+COLS = [("game", "game"), ("levels", None), ("score", None), ("acts", "scored_actions"), ("resets", "resets"),
         ("turns", "turns"), ("mcalls", "model_calls"), ("tools", "tool_calls"), ("terr", "tool_errors"),
         ("gen_tok", "generated_tokens"), ("prompt_tok", "prompt_tokens"), ("cached", None),
         ("s/call", None), ("acts/level @idx", None), ("end", "end_reason")]
@@ -136,7 +145,8 @@ def fmt_row(g: dict, total: bool = False) -> list[str]:
         apl = ""
     else:
         apl = " ".join(f"{a}@{i}" for a, i in zip(g["actions_per_level"], g["level_actions"])) or "-"
-    row = [g.get("game", "TOTAL"), lv]
+    sc = "-" if g["score"] is None else f"{g['score']:.3f}"
+    row = [g.get("game", "TOTAL"), lv, sc]
     row += [str(g[k]) for k in ("scored_actions", "resets", "turns", "model_calls", "tool_calls",
                                 "tool_errors", "generated_tokens", "prompt_tokens")]
     return row + [cf, ms, apl, str(g.get("end_reason", ""))]
@@ -162,7 +172,7 @@ def html_table(report: dict) -> str:
 
 def html_game(g: dict) -> str:
     e = html.escape
-    out = [f"<h2>{e(g['game'])} &mdash; {g['levels_completed']}/{g['win_levels']} levels, "
+    out = [f"<h2>{e(g['game'])} &mdash; {g['levels_completed']}/{g['win_levels']} levels, score {g['score']}, "
            f"{e(str(g['end_reason']))}</h2>"]
     out.append("<h3>Timeline</h3><ul>" + "".join(
         f"<li>step {t['step']} (action #{t['action_index']}): {t['note']}, level {t['level']}</li>"
