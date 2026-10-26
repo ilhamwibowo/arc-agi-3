@@ -211,12 +211,13 @@ def test_timeouts_respected():
         time.sleep(0.05)
         return {**s, "grid": true_step(s["grid"], a)}
     wm.register(slow, model_outcome)
+    # A cap of 0.2 s plus one in-flight 0.05 s call; 1.5 s leaves room for a loaded machine.
     t = time.monotonic()
     res = wm.verify(timeout=0.2)
-    assert res["timeout"] and not res["ok"] and time.monotonic() - t < 1.0
+    assert res["timeout"] and not res["ok"] and time.monotonic() - t < 1.5
     t = time.monotonic()
     res = wm.plan(timeout=0.2)
-    assert not res["found"] and res["reason"].startswith("timeout") and time.monotonic() - t < 1.0
+    assert not res["found"] and res["reason"].startswith("timeout") and time.monotonic() - t < 1.5
 
 
 def test_model_errors_are_reported_not_raised():

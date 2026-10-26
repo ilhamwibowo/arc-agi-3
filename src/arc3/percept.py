@@ -32,7 +32,7 @@ def state_hash(grid: np.ndarray) -> str:
 
 # ---------------------------------------------------------------- segmentation
 
-@dataclass
+@dataclass(repr=False)
 class Node:
     id: int
     color: int
@@ -53,20 +53,68 @@ class Node:
         r0, c0, r1, c1 = self.bbox
         return ((r0 + r1) / 2, (c0 + c1) / 2)
 
+    @property
+    def hash(self) -> str:
+        """Same as color_shape_hash: equal for same-colour objects of the same shape in any rotation."""
+        return self.color_shape_hash
+
+    # Dict-style access so model code like node['color'] / 'bbox' in node / dict(node) works.
+    def keys(self) -> list[str]:
+        return list(NODE_KEYS)
+
+    def __getitem__(self, key: str):
+        if key not in NODE_KEYS:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default=None):
+        return getattr(self, key) if key in NODE_KEYS else default
+
+    def __contains__(self, key: object) -> bool:
+        return key in NODE_KEYS
+
+    def __iter__(self):
+        return iter(NODE_KEYS)
+
+    def items(self) -> list[tuple[str, object]]:
+        return [(k, getattr(self, k)) for k in NODE_KEYS]
+
+    def __repr__(self) -> str:
+        return (f"Node(id={self.id}, color={self.color} {self.letter}, bbox={self.bbox}, "
+                f"pixels={self.pixels}, hash={self.hash[:4]})")
+
     def to_dict(self, with_cells: bool = False) -> dict:
-        d = {k: getattr(self, k) for k in ("id", "color", "letter", "pixels", "bbox", "shape_hash",
-                                           "pose_hash", "color_shape_hash", "rotation",
-                                           "rotational_symmetry", "children", "parent")}
+        d = {k: getattr(self, k) for k in NODE_KEYS if k != "cells"}
         if with_cells:
             d["cells"] = list(self.cells)
         return d
 
 
-@dataclass
+NODE_KEYS = ("id", "color", "letter", "pixels", "bbox", "cells", "hash", "shape_hash", "pose_hash",
+             "color_shape_hash", "rotation", "rotational_symmetry", "children", "parent", "center")
+
+
+@dataclass(repr=False)
 class Segmentation:
     nodes: list[Node]
     adjacency: list[tuple[int, int]]    # (a, b) with a < b, edge-sharing components
     labels: np.ndarray                  # component id per cell
+
+    def __len__(self) -> int:
+        return len(self.nodes)
+
+    def __iter__(self):
+        return iter(self.nodes)
+
+    def __getitem__(self, i: int) -> Node:
+        return self.nodes[i]
+
+    def __repr__(self) -> str:
+        shown = [repr(n) for n in self.nodes[:60]]
+        if len(self.nodes) > 60:
+            shown.append(f"... {len(self.nodes) - 60} more")
+        return f"Segmentation({len(self.nodes)} objects, {len(self.adjacency)} adjacent pairs)\n" \
+            + "\n".join(shown)
 
     def node_at(self, row: int, col: int) -> Node:
         return self.nodes[int(self.labels[row, col])]

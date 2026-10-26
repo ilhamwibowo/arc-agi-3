@@ -4,8 +4,10 @@ Contract with the other modules (duck-typed so tests can use fakes):
 - `make_env(game_id) -> env`: an environment session; must have `reset()` and `step(action)`.
   In competition mode pass `arena=` instead and the runner uses `arena.make` and opens/closes the
   single competition scorecard around the whole run.
-- `agent_factory(game_id, progress) -> agent` where `agent.play_game(env, deadline)` plays until
-  done or until `deadline` (epoch seconds, time.time()) and may return a JSON-able summary.
+- `make_session(game_id, env) -> session` (optional; default: the env itself) builds what the agent
+  plays on, e.g. arc3.session.GameSession.
+- `agent_factory(game_id, progress) -> agent` where `agent.play_game(session, deadline)` plays until
+  done or until `deadline` (epoch seconds, time.time()) and may return a summary object.
   The agent owns `progress` updates and gate acquire/release.
 
 Keep-alive: the competition gateway ends the run after 15 minutes without an action, while the model
@@ -67,8 +69,9 @@ class _Run:
     """Shared state of one run_games call."""
 
     def __init__(self, gate, log_dir, run_start, run_end, per_game_cap, model_ready,
-                 keepalive_seconds, clock):
+                 keepalive_seconds, clock, make_session=None):
         self.gate = gate
+        self.make_session = make_session
         self.log_dir = log_dir
         self.run_start = run_start
         self.run_end = run_end                  # already includes the safety margin
@@ -96,13 +99,12 @@ class _Run:
                 log.info("keep-alive RESET #%d on %s", self.keepalive_resets, game_id)
             except Exception:
                 log.exception("keep-alive RESET failed on %s", game_id)
-            waited = 0.0
-            while waited < self.keepalive_seconds:
-                if self.first_action.wait(min(5.0, self.keepalive_seconds - waited)):
+            next_reset = self.clock() + self.keepalive_seconds
+            while (left := next_reset - self.clock()) > 0:
+                if self.first_action.wait(min(5.0, left)):
                     return
                 if self.stop.is_set() or self._model_up():
                     return
-                waited += 5.0
 
     def _model_up(self) -> bool:
         if self.model_ready is None:
@@ -118,13 +120,14 @@ class _Run:
         deadline = self.deadline_for(start)
         summary: dict[str, Any] = {"game_id": game_id, "keeper": keeper, "start": start,
                                    "deadline": deadline, "status": "running"}
-        env = None
+        env = session = None
         try:
             env = _ActionWatch(make_env(game_id), self.first_action)
             if keeper:
                 self.keep_alive(env, game_id)
+            session = self.make_session(game_id, env) if self.make_session else env
             agent = agent_factory(game_id, progress)
-            result = agent.play_game(env, deadline)
+            result = agent.play_game(session, deadline)
             summary["status"] = "ok"
             summary["result"] = result
         except BaseException as exc:            # one game must never take the run down
@@ -134,12 +137,13 @@ class _Run:
             log.error("game %s failed: %s", game_id, summary["error"])
         finally:
             self.gate.finish(progress)
-            close = getattr(env, "close", None) if env is not None else None
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    log.exception("env.close failed for %s", game_id)
+            for obj in {id(o): o for o in (session, env) if o is not None}.values():
+                close = getattr(obj, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        log.exception("close failed for %s", game_id)
             end = self.clock()
             summary.update({
                 "end": end, "seconds": round(end - start, 1),
@@ -163,6 +167,7 @@ def run_games(game_ids: list[str], make_env: Optional[Callable[[str], Any]],
               keepalive_seconds: float = KEEPALIVE_SECONDS,
               model_ready: Optional[Callable[[], bool]] = None,
               abort: Optional[threading.Event] = None,
+              make_session: Optional[Callable[[str, Any], Any]] = None,
               clock: Callable[[], float] = time.time) -> dict:
     """Play all games concurrently and return the run summary (also written to run_summary.json).
 
@@ -181,7 +186,7 @@ def run_games(game_ids: list[str], make_env: Optional[Callable[[str], Any]],
     run_start = clock()
     run_end = run_start + max(0.0, total_seconds - margin_seconds)
     run = _Run(gate, log_dir, run_start, run_end, per_game_cap_seconds, model_ready,
-               keepalive_seconds, clock)
+               keepalive_seconds, clock, make_session)
     gate.set_run_window(run_start, run_end)
 
     scorecard = None

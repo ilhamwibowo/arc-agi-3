@@ -42,9 +42,12 @@ class Record:
     level: int = 0
     available_actions: list = field(default_factory=list)
     previous: list = field(default_factory=list)   # Records of earlier levels, oldest first
+    live_grid: Optional[np.ndarray] = None         # observed board now, if not the last `after`
 
     @property
     def current_grid(self) -> np.ndarray:
+        if self.live_grid is not None:
+            return self.live_grid
         return self.transitions[-1][2] if self.transitions else self.level_start_grid
 
 
@@ -190,6 +193,8 @@ class WM:
         self.hud_border = hud_border
         self._cancel = cancel or (lambda: False)
         self.model: Optional[dict] = None
+        # Set by the sandbox per snippet: runs a list of actions for real, returns the call summary.
+        self.executor: Optional[Callable[[list], dict]] = None
 
     # ---- harness side
     def set_record(self, record) -> None:
@@ -363,6 +368,8 @@ class WM:
                 state["grid"] = before.copy()
                 state = self._step(state, norm_action(action))
                 prev_after = np.asarray(after)
+            if cur.shape != prev_after.shape or not np.array_equal(cur, prev_after):
+                state = self._init(cur, rec.level)   # board jumped (e.g. reset after game over)
             state["grid"] = cur.copy()
             return state
         except _Timeout:
@@ -503,6 +510,9 @@ class WM:
         """Replay actions through your model from wm.current_state(). Returns {ok (ends in
         level_complete), final_outcome, steps:[{action, hash, outcome}], error}. Stops at the first
         terminal outcome or model error."""
+        return self._rollout(actions, keep_grids=False)
+
+    def _rollout(self, actions, keep_grids: bool) -> dict:
         self._need_model()
         state = self.current_state()
         steps, final, error = [], "ongoing", None
@@ -516,6 +526,8 @@ class WM:
                 break
             steps.append({"action": action_str(a), "hash": grid_hash(state["grid"]),
                           "outcome": final})
+            if keep_grids:
+                steps[-1]["grid"] = state["grid"]
             if final != "ongoing":
                 break
         return {"ok": error is None and final == "level_complete", "final_outcome": final,
@@ -524,6 +536,54 @@ class WM:
     def expected_hashes(self, actions) -> list[str]:
         """Expected grid hash after each action of a plan (see wm.grid_hash)."""
         return [s["hash"] for s in self.validate(actions)["steps"]]
+
+    def execute(self, actions, stop_on_mismatch: bool = True) -> dict:
+        """Play a plan in the REAL game one action at a time (this costs actions), checking each
+        observed board against your model's prediction. Stops at the first mismatch (when
+        stop_on_mismatch), a game over, a level completion or a refused action. Returns {executed,
+        mismatch_index (None if all matched), expected_diff ('expected->observed @ ...'),
+        observed_outcome, stop_reason}."""
+        if self.executor is None:
+            raise RuntimeError("wm.execute is only available inside the python tool")
+        actions = [norm_action(a) for a in actions]
+        expected = self._rollout(actions, keep_grids=True)["steps"]
+        out = {"executed": 0, "mismatch_index": None, "expected_diff": None,
+               "observed_outcome": "ongoing", "stop_reason": None}
+        for i, a in enumerate(actions):
+            try:
+                res = self.executor([a])
+            except Exception as e:  # noqa: BLE001 - guards raise to stop the batch
+                out["stop_reason"] = _err(e)
+                break
+            if not res.get("executed"):
+                out["stop_reason"] = res.get("stop_reason") or "refused"
+                break
+            out["executed"] += 1
+            if res.get("level_completed") or res.get("run_complete"):
+                out["observed_outcome"] = "level_complete"
+                out["stop_reason"] = "level_completed"
+                break
+            if res.get("game_over"):
+                out["observed_outcome"] = "game_over"
+            observed = np.asarray(self._rec().current_grid)
+            exp = expected[i] if i < len(expected) else None
+            if exp is None or exp["outcome"] != out["observed_outcome"] or \
+                    grid_hash(observed) != exp["hash"]:
+                if out["mismatch_index"] is None:
+                    out["mismatch_index"] = i
+                    out["expected_diff"] = ("model gave no prediction" if exp is None else
+                                            diff_text(exp["grid"], observed)["diff"]
+                                            or f"outcome {exp['outcome']} predicted")
+                if stop_on_mismatch:
+                    out["stop_reason"] = "mismatch"
+                    break
+            if out["observed_outcome"] == "game_over":
+                out["stop_reason"] = "game_over"
+                break
+            if res.get("stop_reason"):
+                out["stop_reason"] = res["stop_reason"]
+                break
+        return out
 
     grid_hash = staticmethod(grid_hash)
     diff = staticmethod(diff_text)

@@ -74,6 +74,16 @@ STRATEGY = """\
 - The game is deterministic: a sequence that failed once will fail again."""
 
 
+WORLD_MODEL = """\
+## Executable world model (optional, powerful)
+Once you understand the mechanics, let code find the shortest plan. `wm` is a global in every call:
+- Free helpers, no model needed: `wm.induce_motion()` (what each direction moves, by how much, when it was blocked), `wm.untried_actions()`, `wm.transition_graph()` (no-ops, deaths, revisited states).
+- Write `transition(state, action)` returning a NEW state dict and `outcome(state)` returning 'ongoing', 'level_complete' or 'game_over'. `state['grid']` is a numpy board; add hidden fields (counters, inventory) as extra keys and an `init=lambda grid, level: {...}` for them. `action` is a dict: test `action['action'] == 'UP'` (clicks also have 'row', 'col').
+- `wm.register(transition, outcome)` then `wm.verify()`: it replays every recorded move and reports the first divergence as 'expected->predicted @ row cols'. Fix that one and verify again until `ok`.
+- `plan = wm.plan()` searches your model for the fewest actions reaching 'level_complete' (or `wm.plan(goal=fn)`; `wm.goal_menu()` lists candidate goals). Then `wm.execute(plan['actions'])` plays it and stops at the first step where the real board differs from your prediction.
+- verify and plan cost no game actions. Score is roughly quadratic in action efficiency, so a verified model plus the planner usually beats hand-played moves. Do not hardcode per-level branches in `transition`."""
+
+
 def build_system_prompt(hud_border: int = 4, expose_undo: bool = True, expose_reset: bool = False,
                         tool_timeout: int = 30, output_tokens: int = 3000,
                         modules: Sequence[str] = DEFAULT_MODULES) -> str:
@@ -85,6 +95,7 @@ def build_system_prompt(hud_border: int = 4, expose_undo: bool = True, expose_re
         SIGNALS.format(border=hud_border),
         TOOL.format(timeout=tool_timeout, out_tokens=output_tokens, modules=", ".join(modules)),
         STRATEGY,
+        WORLD_MODEL,
     ]
     return "\n\n".join(parts)
 

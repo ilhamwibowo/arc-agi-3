@@ -28,6 +28,7 @@ from typing import Any, Optional
 import numpy as np
 
 from arc3.types import Action, ActionResult, ToolResult
+from arc3.wm import WM, Record
 
 ALLOWED_MODULES = frozenset({
     "bisect", "collections", "copy", "difflib", "fractions", "functools", "heapq", "itertools",
@@ -42,7 +43,7 @@ BLOCKED_BUILTINS = frozenset({
 SAFE_BUILTIN_NAMES = frozenset(k for k in vars(builtins) if k not in BLOCKED_BUILTINS)
 PROVIDED = ("current_frame", "previous_frame", "history", "transitions", "last_transition",
             "valid_actions", "last_action_call_result", "last_animation_frames", "frame_diff",
-            "action", "result")
+            "action", "result", "wm")
 TIMEOUT_S = 30.0
 MAX_OUTPUT_CHARS = 12_000          # ~3000 tokens
 MAX_ACTIONS_PER_CALL = 64
@@ -176,6 +177,7 @@ class PythonTool:
         self.last_animation_frames: list = []
         self._views: dict[int, TransitionView] = {}
         self._calls = 0
+        self.wm = WM(record=self._wm_record, hud_border=session.config.hud_border)
 
     # ---- globals -------------------------------------------------------------------------------
 
@@ -226,9 +228,36 @@ class PythonTool:
 
         ns["frame_diff"] = frame_diff
         ns["action"] = lambda actions: self._action(run, ns, actions)
+        # One WM per game (keeps the registered model across calls), rebound to this snippet.
+        self.wm.executor = ns["action"]
+        self.wm._cancel = lambda: run.cancelled
+        ns["wm"] = self.wm
         ns["result"] = None
         self._refresh(ns)
         return ns
+
+    def _wm_record(self) -> Record:
+        """Settled transitions per level from the session history (automatic RESETs dropped)."""
+        s = self.session
+        by_level: dict[int, Record] = {}
+        for t in s.history:
+            if t.action.name == "RESET" or not t.result.executed:
+                continue
+            lv = t.before.levels_completed + 1
+            rec = by_level.get(lv)
+            if rec is None:
+                rec = by_level[lv] = Record(level_start_grid=t.before.grid, level=lv)
+            r = t.result
+            outcome = ("game_over" if r.game_over else
+                       "level_complete" if r.level_completed or r.run_complete else "ongoing")
+            rec.transitions.append((t.before.grid, {"action": t.action.name, "row": t.action.row,
+                                                    "col": t.action.col}, t.after.grid, outcome))
+        cur = s.level
+        current = by_level.pop(cur, None) or Record(level_start_grid=s.current.grid, level=cur)
+        current.available_actions = list(s.valid_actions)
+        current.live_grid = s.current.grid   # differs from the last `after` after an auto RESET
+        current.previous = [by_level[k] for k in sorted(by_level) if k < cur]
+        return current
 
     # ---- action() ------------------------------------------------------------------------------
 

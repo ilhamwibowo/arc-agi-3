@@ -206,3 +206,30 @@ def test_transient_mask():
     m = percept.transient_mask([f0, f1, f0])
     assert m.dtype == bool and m.shape == (4, 4) and m.sum() == 1 and m[0, 0]
     assert not percept.transient_mask([f0, f1]).any()
+
+
+def test_model_friendly_api():
+    g = np.zeros((70, 70), np.uint8)
+    for i in range(70):
+        g[i, i % 7 * 9] = 9  # many small objects
+    g[1:4, 1:4] = 5
+    seg = percept.segment(g)
+    assert len(seg) == len(seg.nodes) > 60
+    assert list(seg)[1] is seg[1] and isinstance(seg.nodes, list)
+    node = seg.node_at(2, 2)
+    assert node["color"] == node.color == 5 and node.get("nope", 7) == 7
+    assert "color" in node and "nope" not in node
+    d = dict(node)
+    assert d["bbox"] == [1, 1, 3, 3] and set(node.keys()) == set(d)
+    assert node["hash"] == node.color_shape_hash
+    with pytest.raises(KeyError):
+        node["nope"]
+    assert repr(node) == f"Node(id={node.id}, color=5 {L[5]}, bbox=[1, 1, 3, 3], pixels=9, hash={node.hash[:4]})"
+    text = repr(seg)
+    assert text.count("\n") == 61 and "more" in text.splitlines()[-1]
+    # plain Python ints everywhere a model might print them
+    for n in seg:
+        assert all(type(v) is int for v in n.bbox) and type(n.color) is int
+        assert all(type(r) is int and type(c) is int for r, c in n.cells)
+        assert all(type(x) is int for x in n.children)
+    assert all(type(a) is int and type(b) is int for a, b in seg.adjacency)
