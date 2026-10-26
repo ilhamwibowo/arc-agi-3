@@ -40,7 +40,7 @@ RUNTIME = """\
 - `last_action_call_result`: the result of your latest `action(...)` call (executed actions, flags, stop reasons). It survives later inspection calls.
 - `last_animation_frames`: every intermediate frame of the last action that animated (index 0 first, last = settled board); empty if none. Reading them costs nothing.
 - `frame_diff(before=None, after=None)`: object-level diff (moved, rotated, appeared, disappeared, changed_color, resized, changed_cell_count); defaults to previous_frame vs current_frame. Object matching is heuristic, not identity.
-- `action(actions)`: executes real game actions, e.g. `action(['LEFT', 'LEFT'])` or `action([{{'action': 'MOUSE', 'row': 12, 'col': 30}}])`. It returns the call result, and all variables above are refreshed before your next statement."""
+- `action(actions)`: executes real game actions, e.g. `action(['LEFT', 'LEFT'])` or `action([{'action': 'MOUSE', 'row': 12, 'col': 30}])`. It returns the call result, and all variables above are refreshed before your next statement."""
 
 ACTIONS = """\
 ## Actions
