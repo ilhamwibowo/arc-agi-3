@@ -1,0 +1,31 @@
+{
+  "verified_date": "2026-10-26",
+  "references": [
+    {
+      "repository": "https://github.com/arcprize/ARC-AGI-3-Kaggle-Starter",
+      "commit": "eeb1535404f321d280a8f9194bbc1d7aca5f05fc",
+      "use": "Interface reference only; no license file found. Builder independently implemented."
+    },
+    {
+      "repository": "https://github.com/arcprize/ARC-AGI-3-Agents",
+      "commit": "4743e7d0aaae0ded0d98a89a7e282e63564cd58b",
+      "license": "MIT",
+      "use": "Interface reference only; framework not bundled."
+    }
+  ],
+  "local_toolkit": {
+    "arc-agi": "0.9.9",
+    "arcengine": "0.9.3"
+  },
+  "competition_dataset_versions_verified": true,
+  "kaggle_execution_verified": true,
+  "competition_toolkit": {
+    "arc-agi": "0.9.8",
+    "arcengine": "0.9.3",
+    "numpy": "2.4.4",
+    "lock": "configs/kaggle-runtime-lock.json"
+  },
+  "kaggle_execution_scope": "Private offline CPU structural run, agent import and synthetic actions; no real Kaggle game evaluation.",
+  "kaggle_gateway_verified": false,
+  "kaggle_audit": "reports/submission-kaggle-selector-v2-audit.json"
+}

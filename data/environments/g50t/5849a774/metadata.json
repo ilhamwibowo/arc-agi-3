@@ -1,0 +1,19 @@
+{
+  "game_id": "g50t-5849a774",
+  "title": "G50T",
+  "default_fps": 30,
+  "tags": [
+    "keyboard"
+  ],
+  "baseline_actions": [
+    78,
+    175,
+    179,
+    230,
+    96,
+    54,
+    67
+  ],
+  "local_dir": "/Users/ilhamwibowo/Projects/arc-harness/data/environments/g50t/5849a774",
+  "date_downloaded": "2026-10-26T03:56:37.404102+00:00"
+}

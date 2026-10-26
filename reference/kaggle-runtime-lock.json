@@ -1,0 +1,161 @@
+{
+  "source": "https://www.kaggle.com/competitions/arc-prize-2026-arc-agi-3/data",
+  "kaggle_cpu_image": "gcr.io/kaggle-images/python@sha256:17b2fc7f27c25c6c2fd4230ec8e66097ab2b89fc88e1e4d6f338b72e1ee0bc3e",
+  "packages": {
+    "annotated-types": {
+      "version": "0.7.0",
+      "sha256": "1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53",
+      "wheel": "annotated_types-0.7.0-py3-none-any.whl"
+    },
+    "arc-agi": {
+      "version": "0.9.8",
+      "sha256": "aeca1663db342e91cb8fc96cf0c83e2fa39db1640bc1298e80a8d522e3af70f3",
+      "wheel": "arc_agi-0.9.8-py3-none-any.whl"
+    },
+    "arcengine": {
+      "version": "0.9.3",
+      "sha256": "5f9739d6d0055780a4581fd6fe09066bb08775c4c8212c9adcca2eb008aef59c",
+      "wheel": "arcengine-0.9.3-py3-none-any.whl"
+    },
+    "blinker": {
+      "version": "1.9.0",
+      "sha256": "ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc",
+      "wheel": "blinker-1.9.0-py3-none-any.whl"
+    },
+    "certifi": {
+      "version": "2026.2.25",
+      "sha256": "027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa",
+      "wheel": "certifi-2026.2.25-py3-none-any.whl"
+    },
+    "charset-normalizer": {
+      "version": "3.4.7",
+      "sha256": "5649fd1c7bade02f320a462fdefd0b4bd3ce036065836d4f42e0de958038e116",
+      "wheel": "charset_normalizer-3.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    "click": {
+      "version": "8.3.2",
+      "sha256": "1924d2c27c5653561cd2cae4548d1406039cb79b858b747cfea24924bbc1616d",
+      "wheel": "click-8.3.2-py3-none-any.whl"
+    },
+    "contourpy": {
+      "version": "1.3.3",
+      "sha256": "4d00e655fcef08aba35ec9610536bfe90267d7ab5ba944f7032549c55a146da1",
+      "wheel": "contourpy-1.3.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    "cycler": {
+      "version": "0.12.1",
+      "sha256": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+      "wheel": "cycler-0.12.1-py3-none-any.whl"
+    },
+    "Flask": {
+      "version": "3.1.3",
+      "sha256": "f4bcbefc124291925f1a26446da31a5178f9483862233b23c0c96a20701f670c",
+      "wheel": "flask-3.1.3-py3-none-any.whl"
+    },
+    "fonttools": {
+      "version": "4.62.1",
+      "sha256": "149f7d84afca659d1a97e39a4778794a2f83bf344c5ee5134e09995086cc2392",
+      "wheel": "fonttools-4.62.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+    },
+    "idna": {
+      "version": "3.11",
+      "sha256": "771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea",
+      "wheel": "idna-3.11-py3-none-any.whl"
+    },
+    "itsdangerous": {
+      "version": "2.2.0",
+      "sha256": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef",
+      "wheel": "itsdangerous-2.2.0-py3-none-any.whl"
+    },
+    "Jinja2": {
+      "version": "3.1.6",
+      "sha256": "85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67",
+      "wheel": "jinja2-3.1.6-py3-none-any.whl"
+    },
+    "kiwisolver": {
+      "version": "1.5.0",
+      "sha256": "bb5136fb5352d3f422df33f0c879a1b0c204004324150cc3b5e3c4f310c9049f",
+      "wheel": "kiwisolver-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+    },
+    "MarkupSafe": {
+      "version": "3.0.3",
+      "sha256": "d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d",
+      "wheel": "markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    "matplotlib": {
+      "version": "3.10.8",
+      "sha256": "3ab4aabc72de4ff77b3ec33a6d78a68227bf1123465887f9905ba79184a1cc04",
+      "wheel": "matplotlib-3.10.8-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
+    },
+    "numpy": {
+      "version": "2.4.4",
+      "sha256": "81f4a14bee47aec54f883e0cad2d73986640c1590eb9bfaaba7ad17394481e6e",
+      "wheel": "numpy-2.4.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    "packaging": {
+      "version": "26.1",
+      "sha256": "5d9c0669c6285e491e0ced2eee587eaf67b670d94a19e94e3984a481aba6802f",
+      "wheel": "packaging-26.1-py3-none-any.whl"
+    },
+    "pillow": {
+      "version": "12.2.0",
+      "sha256": "62f5409336adb0663b7caa0da5c7d9e7bdbaae9ce761d34669420c2a801b2780",
+      "wheel": "pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    "pydantic": {
+      "version": "2.13.2",
+      "sha256": "a525087f4c03d7e7456a3de89b64cd693d2229933bb1068b9af6befd5563694e",
+      "wheel": "pydantic-2.13.2-py3-none-any.whl"
+    },
+    "pydantic_core": {
+      "version": "2.46.2",
+      "sha256": "48649cf2d8c358d79586e9fb2f8235902fcaa2d969ec1c5301f2d1873b2f8321",
+      "wheel": "pydantic_core-2.46.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    },
+    "pyparsing": {
+      "version": "3.3.2",
+      "sha256": "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d",
+      "wheel": "pyparsing-3.3.2-py3-none-any.whl"
+    },
+    "python-dateutil": {
+      "version": "2.9.0.post0",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "wheel": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl"
+    },
+    "python-dotenv": {
+      "version": "1.2.2",
+      "sha256": "1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a",
+      "wheel": "python_dotenv-1.2.2-py3-none-any.whl"
+    },
+    "requests": {
+      "version": "2.33.1",
+      "sha256": "4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a",
+      "wheel": "requests-2.33.1-py3-none-any.whl"
+    },
+    "six": {
+      "version": "1.17.0",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "wheel": "six-1.17.0-py2.py3-none-any.whl"
+    },
+    "typing_extensions": {
+      "version": "4.15.0",
+      "sha256": "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+      "wheel": "typing_extensions-4.15.0-py3-none-any.whl"
+    },
+    "typing-inspection": {
+      "version": "0.4.2",
+      "sha256": "4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7",
+      "wheel": "typing_inspection-0.4.2-py3-none-any.whl"
+    },
+    "urllib3": {
+      "version": "2.6.3",
+      "sha256": "bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4",
+      "wheel": "urllib3-2.6.3-py3-none-any.whl"
+    },
+    "Werkzeug": {
+      "version": "3.1.8",
+      "sha256": "63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50",
+      "wheel": "werkzeug-3.1.8-py3-none-any.whl"
+    }
+  }
+}

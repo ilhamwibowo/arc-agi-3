@@ -1,0 +1,18 @@
+{
+  "game_id": "tr87-cd924810",
+  "title": "TR87",
+  "default_fps": 10,
+  "tags": [
+    "keyboard"
+  ],
+  "baseline_actions": [
+    54,
+    58,
+    40,
+    45,
+    71,
+    146
+  ],
+  "local_dir": "/Users/ilhamwibowo/Projects/arc-harness/data/environments/tr87/cd924810",
+  "date_downloaded": "2026-10-26T03:57:12.476934+00:00"
+}

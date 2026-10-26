@@ -1,0 +1,18 @@
+{
+  "game_id": "cd82-fb555c5d",
+  "title": "CD82",
+  "default_fps": 30,
+  "tags": [
+    "keyboard_click"
+  ],
+  "baseline_actions": [
+    55,
+    8,
+    41,
+    21,
+    23,
+    23
+  ],
+  "local_dir": "/Users/ilhamwibowo/Projects/arc-harness/data/environments/cd82/fb555c5d",
+  "date_downloaded": "2026-10-26T03:56:28.624728+00:00"
+}

@@ -1,0 +1,15 @@
+# Public leaderboard snapshot, 2026-10-27 ~05:00 WIB (50% of hidden test)
+1 Yi-Chia Chen @ Fields Model 71.48 (42 entries)
+2 Tufa Labs 68.91 (172)
+3 Team Turducken 56.02 (211)
+4 the last dance 50.69 (92)
+5 mtg 50.37 (80)
+6 NVARC3 48.84 (74)
+7 Grigoriy Zatravkin & co 47.19 (106)
+8 復活の混テキスト 46.82 (96)
+9 artificialagencylab.com 45.41 (61)
+10 Majkel1337 45.03 (28)
+11 yktori 44.54 (28)
+12 Vineeth Sai Varikuntla 40.98 (74)
+Our team: "Heartland Labs" (Sugih AF, Ilham Wibowo) — best 22.23 (dfranzen-fork), rank 1937 of ~2000+; ~thousands of teams cluster at 22.x running the public notebook. Top-5 cutoff ~50.
+Public dfranzen M2 notebook: 27.89.
