@@ -20,9 +20,18 @@ ENGINE_TO_MODEL = {
 }
 MODEL_TO_ENGINE = {v: k for k, v in ENGINE_TO_MODEL.items()}
 
-# ARC palette letters for ascii rendering (index = color value 0..15)
-COLOR_LETTERS = "KBRGYAMOCWPLEDFH"  # 0 black(K) 1 blue 2 red 3 green 4 yellow 5 gray(A) 6 magenta
-# 7 orange 8 cyan 9 white 10 pink 11 lime 12 maroon(E) 13 dark(D) 14 forest(F) 15 hot(H)
+# ARC-AGI-3 palette (arc_agi/rendering.py COLOR_MAP), index = color value 0..15.
+# Letters are the ascii labels shown to the model; names/hex must agree with the PNG renderer.
+COLOR_LETTERS = "WVSADKMPRBCYONGU"
+COLOR_NAMES = (
+    "white", "ivory", "silver", "gray", "darkgray", "black", "magenta", "pink",
+    "red", "blue", "cyan", "yellow", "orange", "maroon", "green", "purple",
+)
+COLOR_HEX = (
+    "#FFFFFF", "#CCCCCC", "#999999", "#666666", "#333333", "#000000", "#E53AA3", "#FF7BCC",
+    "#F93C31", "#1E93FF", "#88D8F1", "#FFDC00", "#FF851B", "#921231", "#4FCC30", "#A356D6",
+)
+COLOR_LEGEND = ", ".join(f"{i}={COLOR_LETTERS[i]} {COLOR_NAMES[i]}" for i in range(16))
 
 
 class GameState(str, Enum):
