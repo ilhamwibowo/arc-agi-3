@@ -71,7 +71,7 @@ TOOL = """\
 - One tool, `python(code)`. Each call has a {timeout}s limit and its printed output is cut to about {out_tokens} tokens, so print compact summaries: object lists, counts, coordinates, small crops. Never print a whole board.
 - Variables reset between calls, but top-level functions you define are kept and can be called later (no decorators/annotations; pass data as arguments); `source('name')` prints one. `np`, `math`, `collections`, `itertools` are preloaded. Importable modules: {modules}.
 - `memory` is a dict that persists across calls; variables do not. Store plans, maps, rule notes there (`memory['plan'] = ...`). Mutate it; do not reassign it.
-- Call the tool as often as you like. When unsure, run code rather than reasoning longer: code answers in a second what thinking only guesses."""
+- Call the tool as often as you like. Think in short bursts: when a hypothesis can be checked with code, call the tool instead of reasoning further."""
 
 STRATEGY = """\
 ## Strategy

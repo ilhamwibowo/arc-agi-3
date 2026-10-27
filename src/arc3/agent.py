@@ -45,7 +45,7 @@ PYTHON_TOOL = {
 @dataclass
 class AgentConfig:
     context_tokens: int = 116_000       # prompt budget; trimming starts above this
-    output_tokens: int = 8_000          # max_tokens per completion (run #3: 12k let 20 calls think to the cap)
+    output_tokens: int = 6_000          # max_tokens per completion; a cut at 8k cost 150-285 s in run #5
     drain_tokens: int = 58_000          # trim down to context_tokens - drain_tokens
     yield_tokens: int = 2048            # generated tokens per turn before yielding
     temperature: float = 0.7

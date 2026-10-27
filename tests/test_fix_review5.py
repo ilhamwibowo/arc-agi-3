@@ -227,3 +227,14 @@ def test_sandbox_evidence_and_agent_opener_on_fake_session():
     users = [m.content for m in agent.context.messages if m.role == "user"]
     assert any("This level: 3 actions, 2 distinct states; last 3 actions reached 1 new states." in u
                for u in users)
+
+
+# ------------------------------------------------------------------ 4. cheaper cuts
+
+def test_output_cap_and_short_burst_line():
+    from arc3.agent import AgentConfig
+    assert AgentConfig().output_tokens == 6000
+    p = prompts.build_system_prompt()
+    assert "Think in short bursts: when a hypothesis can be checked with code, call the tool" in p
+    # Items 2-4 of fix-review-5 together must add under 500 chars to the run #5 prompt (8803).
+    assert len(p) - 8803 < 500
