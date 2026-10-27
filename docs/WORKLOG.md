@@ -38,3 +38,4 @@
 - NOT fixed: after-action calls still cache 11 % (images_window=1 did not help); yield/in-turn 93–94 %.
   wm tools used 0/1233 calls (reworked prompt made usage worse, not better). level_reset never fired.
 - Next: run #4 = images A/B (4 games with images, 4 text-only, 1 h cap) to settle the cache question.
+- 11:00 Run #4 pushed: `wibowoilham/arc3-ab-images` v1 (images on: sb26 dc22 ls20 ft09; off: vc33 re86 tu93 bp35; 1 h cap).
