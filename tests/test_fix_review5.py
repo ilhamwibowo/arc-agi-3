@@ -238,3 +238,64 @@ def test_output_cap_and_short_burst_line():
     assert "Think in short bursts: when a hypothesis can be checked with code, call the tool" in p
     # Items 2-4 of fix-review-5 together must add under 500 chars to the run #5 prompt (8803).
     assert len(p) - 8803 < 500
+
+
+# ------------------------------------------------------------------ 5. helper retention
+
+def test_retained_functions_freeze_snippet_level_data():
+    import test_sandbox
+    tool = PythonTool(test_sandbox.FakeSession())
+    r = tool.run(
+        "WALLS = current_frame.grid == 5\n"
+        "DELTA = {'UP': (-1, 0), 'DOWN': (1, 0)}\n"
+        "ORDER = ('UP', 'DOWN')\n"
+        "SEEN = {(1, 2)}\n"
+        "def blocked(r, c):\n    return bool(WALLS[r, c])\n"
+        "def move(a, d=DELTA):\n    return d[a]\n"
+        "def first(o=ORDER):\n    return o[0], (1, 2) in SEEN\n")
+    assert r.error is None, r.error
+    assert r.retained_functions == ["blocked", "first", "move"]
+    assert r.rejected_functions == {}
+    b = tool.retained["blocked"]["bound"]
+    assert set(b) == {"WALLS"} and not b["WALLS"].flags.writeable
+    assert tool.retained["first"]["bound"]["ORDER"] == ("UP", "DOWN")      # tuples stay tuples
+    assert tool.retained["first"]["bound"]["SEEN"] == {(1, 2)}
+    assert tool.retained["move"]["deps"] == set()
+    # Next call: the frozen copies are back, the originals are gone from the snippet's own scope
+    # only in the sense that the snippet never set them; the function reads the copy.
+    r = tool.run("print(blocked(0, 0), move('UP'), first(), sorted(DELTA))")
+    assert r.error is None, r.error
+    assert r.stdout == "False (-1, 0) ('UP', True) ['DOWN', 'UP']\n"
+    # Rebinding a name the function reads at call time affects that call only (a default such
+    # as move's `d=DELTA` was bound when the function was restored and does not change).
+    r = tool.run("SEEN = set()\nDELTA = {'UP': 'changed'}\nprint(first(), move('UP'))")
+    assert r.stdout == "('UP', False) (-1, 0)\n"
+    assert tool.run("print(first())").stdout == "('UP', True)\n"
+    # source() names the frozen values.
+    out = tool.run("source('blocked')").stdout
+    assert out.startswith("# frozen at definition: WALLS\ndef blocked")
+
+
+def test_retention_refuses_unfreezable_or_oversized_values_with_a_reason():
+    import test_sandbox
+    tool = PythonTool(test_sandbox.FakeSession())
+    r = tool.run(
+        "BIG = np.zeros((300, 300), np.uint8)\n"            # 90 KB > 64 KB
+        "f = lambda x: x\n"
+        "FR = current_frame\n"
+        "def big():\n    return BIG.sum()\n"
+        "def uses_lambda(x):\n    return f(x)\n"
+        "def uses_frame():\n    return FR.step\n"
+        "def missing():\n    return NOPE\n")
+    assert r.error is None, r.error
+    assert r.retained_functions == []
+    assert "over 64 KB" in r.rejected_functions["big"] and "memory[" in r.rejected_functions["big"]
+    assert "a function, which cannot be frozen" in r.rejected_functions["uses_lambda"]
+    assert "a FrameView, which cannot be frozen" in r.rejected_functions["uses_frame"]
+    assert "NOPE which is not available later" in r.rejected_functions["missing"]
+    assert all("\n" not in why for why in r.rejected_functions.values())
+    # A value that fits is frozen even next to a big one in the same snippet.
+    r = tool.run("SMALL = [1, 2, 3]\nBIG = np.zeros((300, 300), np.uint8)\n"
+                 "def small():\n    return sum(SMALL)\n")
+    assert r.retained_functions == ["small"] and tool.run("print(small())").stdout == "6\n"
+    assert "frozen copies, up to 64 KB" in prompts.build_system_prompt()

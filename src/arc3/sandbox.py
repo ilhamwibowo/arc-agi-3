@@ -72,6 +72,7 @@ TIMEOUT_S = 30.0
 MEM_GROWTH_LIMIT = 3 << 30         # a snippet may grow process RSS by at most 3 GB (Linux only)
 KILL_GRACE_S = 5.0                 # how long we keep re-raising into a runaway thread
 MAX_OUTPUT_CHARS = 12_000          # ~3000 tokens
+SNAPSHOT_LIMIT = 64 << 10          # bytes of snippet-level data a retained function may freeze
 MAX_ACTIONS_PER_CALL = 64
 DIFF_CHARS = 200                   # cap for the one-line per-action object diff
 DIFF_ITEMS = 3                     # objects detailed per diff category
@@ -298,7 +299,8 @@ class PythonTool:
         self.timeout = timeout
         self.mem_growth_limit = mem_growth_limit
         self.max_actions = max_actions_per_call
-        self.retained: dict[str, dict] = {}   # name -> {"source": str, "imports": [str]}
+        # name -> {"source", "imports": [str], "deps": set, "bound": {name: frozen value}}
+        self.retained: dict[str, dict] = {}
         self.last_action_call_result: Optional[dict] = None
         self.last_animation_frames: list = []
         # Plain dict that survives across calls (variables do not); the model stores plans here.
@@ -389,7 +391,9 @@ class PythonTool:
                 run.out.append(f"no retained function {name!r}; retained: "
                                f"{', '.join(sorted(self.retained)) or 'none'}\n")
                 return
-            run.out.append("\n".join(entry["imports"] + [entry["source"]]) + "\n")
+            bound = entry.get("bound") or {}
+            frozen = [f"# frozen at definition: {', '.join(sorted(bound))}"] if bound else []
+            run.out.append("\n".join(entry["imports"] + frozen + [entry["source"]]) + "\n")
 
         ns["frame_diff"] = frame_diff
         ns["source"] = source
@@ -602,9 +606,13 @@ class PythonTool:
     # ---- retained functions --------------------------------------------------------------------
 
     def _restore(self, ns: dict) -> dict[str, str]:
+        """Re-define retained functions in this call's globals. Values they froze at definition
+        are put back under their names first (the function reads them as globals), so the snippet
+        sees them too; rebinding such a name in a snippet affects that call only."""
         errors = {}
         for name, entry in list(self.retained.items()):
             try:
+                ns.update(entry.get("bound") or {})
                 exec(compile("\n".join(entry["imports"] + [entry["source"]]), "<retained>", "exec"),
                      ns)
             except Exception as e:
@@ -639,10 +647,18 @@ class PythonTool:
                 rejected[name] = reason
                 continue
             src = ast.get_source_segment(code, node)
-            deps = _global_names(src, name)
-            fresh[name] = {"source": src, "deps": deps - set(imports),
+            deps = _global_names(src, name) | _default_names(node)
+            fresh[name] = {"source": src, "deps": deps - set(imports), "bound": {},
                            "imports": sorted({imports[d] for d in deps if d in imports})}
         known = SAFE_BUILTIN_NAMES | set(PROVIDED)
+        functions = set(self.retained) | set(fresh)
+        # Snippet-level data a fresh function reads is frozen into it (run #5: ft09 lost 10
+        # helpers over module-level tables and re-parsed the board 12 times).
+        for name, entry in list(fresh.items()):
+            problem = _freeze_deps(entry, ns, known | functions)
+            if problem:
+                rejected[name] = problem
+                del fresh[name]
         candidates = {**self.retained, **fresh}
         changed = True
         while changed:  # drop functions with unresolved names until a fixed point
@@ -658,6 +674,63 @@ class PythonTool:
         return sorted(n for n in candidates if n in fresh), rejected
 
 
+def _freeze_deps(entry: dict, ns: dict, resolved: set) -> Optional[str]:
+    """Snapshot the snippet-level values `entry` reads into entry['bound'] (frozen copies), and
+    drop them from its deps. Returns a one-line reason when a value cannot be frozen."""
+    budget = SNAPSHOT_LIMIT
+    for dep in sorted(entry["deps"]):
+        if dep in resolved or dep not in ns:
+            continue   # provided, a function, or missing: the fixed-point loop reports it
+        try:
+            value, size = _snapshot(ns[dep])
+        except TypeError as e:
+            return f"uses {dep} ({e}); pass it as an argument or keep plain data in memory[...]"
+        budget -= size
+        if budget < 0:
+            return (f"uses {dep} (over {SNAPSHOT_LIMIT >> 10} KB of data with the other frozen "
+                    f"values); keep it in memory[...] and read it from there")
+        entry["bound"][dep] = value
+    entry["deps"] = entry["deps"] - set(entry["bound"])
+    return None
+
+
+def _snapshot(value, depth: int = 0) -> tuple[Any, int]:
+    """(frozen copy, approximate bytes) of plain data: JSON-like values, tuples, sets and numpy
+    arrays. Anything else (objects, functions, frames) raises TypeError with a short reason."""
+    if depth > 20:
+        raise TypeError("nested too deep")
+    if isinstance(value, np.ndarray):
+        copy = np.array(value, copy=True)
+        copy.flags.writeable = False
+        return copy, int(copy.nbytes) + 64
+    if value is None or isinstance(value, (bool, int, float, np.generic)):
+        return value, 8
+    if isinstance(value, (str, bytes)):
+        return value, len(value) + 8
+    if isinstance(value, dict):
+        items = [(k, _snapshot(v, depth + 1)) for k, v in value.items()]
+        for k, _ in items:
+            if not isinstance(k, (str, int, float, bool, tuple, type(None))):
+                raise TypeError(f"dict key of type {type(k).__name__}")
+        return ({k: v for k, (v, _) in items}, sum(n + 16 for _, (_, n) in items) + 16)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = [_snapshot(v, depth + 1) for v in value]
+        out = [v for v, _ in items]
+        kind = type(value)
+        built = kind(out) if kind in (list, tuple, set, frozenset) else out
+        return built, sum(n + 8 for _, n in items) + 16
+    raise TypeError(f"a {type(value).__name__}, which cannot be frozen")
+
+
+def _default_names(node: ast.FunctionDef) -> set[str]:
+    """Names read by default-value expressions (evaluated in module scope at definition)."""
+    a = node.args
+    out: set[str] = set()
+    for d in a.defaults + [d for d in a.kw_defaults if d is not None]:
+        out.update(n.id for n in ast.walk(d) if isinstance(n, ast.Name))
+    return out
+
+
 def _shape_problem(node: ast.FunctionDef, ns: dict) -> Optional[str]:
     if node.name in PROVIDED:
         return f"name {node.name} conflicts with a provided global"
@@ -671,11 +744,10 @@ def _shape_problem(node: ast.FunctionDef, ns: dict) -> Optional[str]:
     if node.returns or any(x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs
                            + [v for v in (a.vararg, a.kwarg) if v]):
         return "annotations are not retained; remove them"
-    for d in a.defaults + [d for d in a.kw_defaults if d is not None]:
-        try:
-            ast.literal_eval(d)
-        except ValueError:
-            return "defaults must be literals"
+    live = _default_names(node) & set(PROVIDED)
+    if live:
+        return (f"default value reads {', '.join(sorted(live))}, which changes every call; "
+                "compute it inside the function")
     if any(isinstance(n, (ast.Global, ast.Nonlocal)) for n in ast.walk(node)):
         return "functions that write globals are not retained; return values instead"
     return None

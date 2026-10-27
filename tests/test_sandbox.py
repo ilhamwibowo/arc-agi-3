@@ -205,14 +205,16 @@ def test_retained_functions():
         "def heap(xs):\n    return hq.nsmallest(1, xs)\n"
         "def action(x):\n    return x\n")
     assert r.error is None, r.error
-    assert r.retained_functions == ["dist", "heap", "player", "twice"]
-    assert set(r.rejected_functions) == {"uses_k", "annotated", "nonliteral", "bumps", "action"}
-    assert "K" in r.rejected_functions["uses_k"]
-    r = tool.run("print(twice((3, 4)), player(), heap([5, 2]))")
-    assert r.stdout == "10.0 (4, 4) [2]\n", r.error
+    # fix-review-5: uses_k keeps a frozen copy of K and nonliteral's default (a builtin) is fine.
+    assert r.retained_functions == ["dist", "heap", "nonliteral", "player", "twice", "uses_k"]
+    assert set(r.rejected_functions) == {"annotated", "bumps", "action"}
+    assert tool.retained["uses_k"]["bound"] == {"K": 3}
+    r = tool.run("print(twice((3, 4)), player(), heap([5, 2]), uses_k(), nonliteral()([1]))")
+    assert r.stdout == "10.0 (4, 4) [2] 3 1\n", r.error
     # redefinition replaces; a dependent of a now-rejected function is dropped too
-    r = tool.run("def dist(a, b=K):\n    return 0\n")
+    r = tool.run("def dist(a, b=current_frame):\n    return 0\n")
     assert "dist" in r.rejected_functions and "twice" in r.rejected_functions
+    assert "changes every call" in r.rejected_functions["dist"]
     assert "NameError" in tool.run("twice((1, 1))").error
 
 
