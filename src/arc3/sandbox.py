@@ -46,7 +46,17 @@ BLOCKED_BUILTINS = frozenset({
 SAFE_BUILTIN_NAMES = frozenset(k for k in vars(builtins) if k not in BLOCKED_BUILTINS)
 PROVIDED = ("current_frame", "previous_frame", "history", "transitions", "last_transition",
             "valid_actions", "last_action_call_result", "last_animation_frames", "frame_diff",
-            "action", "result", "wm")
+            "action", "result", "wm", "np")
+
+
+class AttrDict(dict):
+    """Result dict that also answers attribute access (`res.executed` or `res['executed']`)."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 TIMEOUT_S = 30.0
 MAX_OUTPUT_CHARS = 12_000          # ~3000 tokens
 MAX_ACTIONS_PER_CALL = 64
@@ -107,10 +117,28 @@ class TransitionView:
     def __init__(self, t):
         self.index, self.action = t.index, t.action.display()
         self.before, self.after = FrameView.of(t.before), FrameView.of(t.after)
+        # Aliases the prompt mentions / models reach for.
+        self.before_frame, self.after_frame, self.frame = self.before, self.after, self.after
+        self.level = self.before.level
         r = t.result
         self.board_changed, self.gameplay_changed = r.board_changed, r.gameplay_changed
         self.level_completed, self.game_over = r.level_completed, r.game_over
         self.message = r.message
+        self.result = AttrDict(action=self.action, executed=r.executed,
+                               board_changed=r.board_changed, gameplay_changed=r.gameplay_changed,
+                               level_completed=r.level_completed, game_over=r.game_over,
+                               run_complete=r.run_complete, animated=r.animated,
+                               message=r.message)
+
+    def __getitem__(self, key):
+        """Dict-style access (`history[-1]['action']`) for models that treat entries as dicts."""
+        if isinstance(key, str) and not key.startswith("_") and hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def keys(self):
+        return ["index", "action", "level", "frame", "before_frame", "after_frame", "result",
+                "gameplay_changed", "level_completed", "game_over", "message"]
 
     def __repr__(self) -> str:
         return f"<Transition #{self.index} {self.action} changed={self.gameplay_changed}>"
@@ -209,10 +237,7 @@ class PythonTool:
         ns["current_frame"] = FrameView.of(s.current)
         ns["previous_frame"] = FrameView.of(s.previous)
         ns["transitions"] = views
-        ns["history"] = [{"index": v.index, "action": v.action, "level": v.before.level,
-                          "gameplay_changed": v.gameplay_changed,
-                          "level_completed": v.level_completed, "game_over": v.game_over}
-                         for v in views]
+        ns["history"] = views   # same objects: attribute and dict-style access both work
         ns["last_transition"] = views[-1] if views else None
         ns["valid_actions"] = list(s.valid_actions)
         ns["last_action_call_result"] = self.last_action_call_result
@@ -230,6 +255,7 @@ class PythonTool:
             return _percept().frame_diff(grid(before), grid(after))
 
         ns["frame_diff"] = frame_diff
+        ns["np"] = np   # models assume numpy is already imported
         ns["action"] = lambda actions: self._action(run, ns, actions)
         # One WM per game (keeps the registered model across calls), rebound to this snippet.
         self.wm.executor = ns["action"]
@@ -287,9 +313,9 @@ class PythonTool:
             if a.name not in valid:
                 raise ValueError(f"{a.display()} is not a valid action now; valid: {sorted(valid)}")
 
-        summary = {"executed": 0, "skipped": len(parsed), "stop_reason": None,
-                   "level_completed": False, "game_over": False, "run_complete": False,
-                   "animation": None, "per_action": []}
+        summary = AttrDict({"executed": 0, "skipped": len(parsed), "stop_reason": None,
+                            "level_completed": False, "game_over": False, "run_complete": False,
+                            "animation": None, "per_action": [], "frame": ns["current_frame"]})
         for a in parsed:
             if run.budget <= 0:
                 summary["stop_reason"] = "max_actions_per_call"
@@ -329,6 +355,7 @@ class PythonTool:
                 if guards:
                     summary["stop_reason"] = "no_op"
                     break
+        summary["frame"] = ns["current_frame"]   # board after the batch settled
         self.last_action_call_result = summary
         ns["last_action_call_result"] = summary
         ns["last_animation_frames"] = self.last_animation_frames

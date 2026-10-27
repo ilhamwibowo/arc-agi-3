@@ -223,14 +223,15 @@ class Agent:
                                      temperature=cfg.temperature, top_p=cfg.top_p,
                                      top_k=cfg.top_k, seed=cfg.seed, timeout=timeout)
             except Exception as e:
+                if deadline is not None and time.time() >= deadline - 1.0:
+                    # the request was cut by our own deadline: not a model failure
+                    raise DeadlineReached("deadline reached during the model call") from e
                 self.consecutive_failures += 1
                 self.stats.llm_failures += 1
                 self._trace({"kind": "model_error", "error": repr(e)[:500],
                              "consecutive": self.consecutive_failures})
                 if self.consecutive_failures >= cfg.max_llm_failures:
                     raise AgentFailure(f"{self.consecutive_failures} consecutive model failures") from e
-                if deadline is not None and time.time() >= deadline:
-                    raise AgentFailure("deadline reached while retrying the model") from e
                 self._sleep(cfg.retry_sleep)
                 continue
             self.consecutive_failures = 0
