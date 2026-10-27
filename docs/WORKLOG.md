@@ -45,3 +45,23 @@
   readout, wm.check/plan_abstract with a 1600-char WORLD_MODEL, trims strip old reasoning first + trim notice
   with memory summary, stop_reason visible, thinking cap 8k, NUDGE_CUT, tool_result traced. 126 tests.
 - 11:30 Run #5 pushed: `wibowoilham/arc3-full25` v1 — all 25 public games, 3 h cap (queues behind run #4).
+
+## 2026-10-27 15:40 WIB — run #4 result (runs/kaggle/arc3-ab-images/1) — CRASHED at 60 min of play
+- Boot 793 s (READY 07:13:37 UTC). Played 60 min, then SGLang scheduler killed with exit -9 (host OOM):
+  RAM flat at 106 GB until 08:00, 161.8 GB at 08:10, dead 08:13. Cause: ls20 snippet at 08:02 with an
+  infinite loop (`while seen[cur]: path.append(cur[0]), cur` never advances `cur`); the sandbox's 30 s
+  timeout only stopped waiting — the daemon thread kept appending until the kernel OOM-killed the
+  biggest process (the model server). Run #3 was simply lucky. 6 games hung, notebook aborted.
+- Fix (this commit): sandbox polls the worker every 0.25 s; on timeout or >3 GB RSS growth it cancels,
+  then raises SnippetKilled asynchronously into the thread (PyThreadState_SetAsyncExc) until it dies
+  (5 s grace); kaggle_main caps the agent process address space at 40 GB (ARC3_AS_CAP_GB) as backstop.
+  3 new tests (130 total).
+- Images A/B (what the run was for) — decisive, partial data (8 games, 780 calls):
+  | setting | after-action cache | in-turn cache | s/call |
+  | images on (sb26 dc22 ls20 ft09) | 43 % | 99 % | 34.1 |
+  | text only (vc33 re86 tu93 bp35) | 96 % | 98 % | 27.6 |
+  Text-only games progressed at least as well per hour (tu93 8/9, re86 5/8, vc33 4/7, bp35 3/9 in 60 min;
+  run #3 with images reached tu93 9/9 / re86 6/8 / vc33 7/7 / bp35 4/9 in 150 min). Images on: ft09 6/6
+  win, sb26 8/8 win, dc22 4/6, ls20 3/7. ⇒ default send_images=False. Option for later: one image at each
+  level start only (one cache miss per level).
+- Run #5 (full25, images on, pre-fix sandbox) still running; it carries the same OOM risk.

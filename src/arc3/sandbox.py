@@ -6,10 +6,13 @@ environment; this module adds the per-snippet guards (batch no-op stop, stale-st
 latch), output capping and retained helper functions.
 
 Design notes:
-- In-process, one worker thread per call with a 30 s wall clock. A runaway snippet cannot be killed
-  from Python; on timeout we cancel cooperatively (the next `action()` raises), wait for any
-  in-flight env step to finish, discard the snippet's globals and move on. A pure CPU loop keeps
-  burning a core until it ends. This is a guardrail against model mistakes, not a security boundary.
+- In-process, one worker thread per call with a 30 s wall clock and a 3 GB RSS-growth cap. On
+  timeout or memory growth we cancel cooperatively (the next `action()` raises), wait for any
+  in-flight env step to finish, then raise SnippetKilled asynchronously into the thread so a
+  pure-Python loop really stops (run #4 lost 6 games to an infinite list-append that OOM-killed
+  the model server). A snippet stuck inside one long C call only dies when it returns. The
+  snippet's globals are discarded. This is a guardrail against model mistakes, not a security
+  boundary; kaggle_main additionally caps the agent process address space as a backstop.
 - Unlike Duck, `.grid` exposes the raw numpy board (read-only). Code over exact cell values is more
   reliable for a 27B model than parsing ascii, and nothing hidden is in it.
 - Model-visible output contains no game id, wall times or hidden engine state.
@@ -19,6 +22,7 @@ from __future__ import annotations
 import ast
 import builtins
 import collections
+import ctypes
 import itertools
 import math
 import random
@@ -64,6 +68,8 @@ class AttrDict(dict):
         except KeyError:
             raise AttributeError(name) from None
 TIMEOUT_S = 30.0
+MEM_GROWTH_LIMIT = 3 << 30         # a snippet may grow process RSS by at most 3 GB (Linux only)
+KILL_GRACE_S = 5.0                 # how long we keep re-raising into a runaway thread
 MAX_OUTPUT_CHARS = 12_000          # ~3000 tokens
 MAX_ACTIONS_PER_CALL = 64
 DIFF_CHARS = 200                   # cap for the one-line per-action object diff
@@ -258,11 +264,38 @@ class _Run:
         self.lock = threading.Lock()
 
 
+class SnippetKilled(BaseException):
+    """Raised asynchronously inside a runaway snippet thread (BaseException so `except
+    Exception:` in model code cannot swallow it)."""
+
+
+def _rss_bytes() -> Optional[int]:
+    """Current process RSS from /proc (Linux); None where unavailable."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * 4096
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _async_raise(thread: threading.Thread) -> None:
+    """Schedule SnippetKilled in `thread` at its next bytecode boundary. Pure-Python loops (the
+    run-#4 killer: an unbounded list append) die promptly; a long C call only dies on return."""
+    if thread.ident is None:
+        return
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread.ident),
+                                                     ctypes.py_object(SnippetKilled))
+    if res > 1:  # should never happen; undo so we do not poison another thread
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(thread.ident), None)
+
+
 class PythonTool:
     def __init__(self, session, timeout: float = TIMEOUT_S,
-                 max_actions_per_call: int = MAX_ACTIONS_PER_CALL):
+                 max_actions_per_call: int = MAX_ACTIONS_PER_CALL,
+                 mem_growth_limit: int = MEM_GROWTH_LIMIT):
         self.session = session
         self.timeout = timeout
+        self.mem_growth_limit = mem_growth_limit
         self.max_actions = max_actions_per_call
         self.retained: dict[str, dict] = {}   # name -> {"source": str, "imports": [str]}
         self.last_action_call_result: Optional[dict] = None
@@ -507,12 +540,32 @@ class PythonTool:
                     box["error"] = _compact_traceback(e, code)
 
             worker = threading.Thread(target=target, daemon=True, name="sandbox")
+            rss0 = _rss_bytes()
             worker.start()
-            worker.join(self.timeout)
-            if worker.is_alive():
+            deadline = time.monotonic() + self.timeout
+            why = None
+            while worker.is_alive():
+                worker.join(min(0.25, max(0.0, deadline - time.monotonic())))
+                if not worker.is_alive():
+                    break
+                rss = _rss_bytes()
+                if rss0 is not None and rss is not None and rss - rss0 > self.mem_growth_limit:
+                    why = f"MemoryError: python call grew memory by more than {self.mem_growth_limit >> 30} GB"
+                    break
+                if time.monotonic() >= deadline:
+                    why = f"TimeoutError: python call exceeded {self.timeout:g} s"
+                    break
+            if why is not None:
                 with run.lock:  # wait for an in-flight env step, then block further steps
                     run.cancelled = True
-                error = f"TimeoutError: python call exceeded {self.timeout:g} s; globals discarded"
+                # Actually stop the thread: a daemon thread left spinning kept run #4's snippet
+                # appending to a list until the host OOM-killed the model server.
+                kill_until = time.monotonic() + KILL_GRACE_S
+                while worker.is_alive() and time.monotonic() < kill_until:
+                    _async_raise(worker)
+                    worker.join(0.2)
+                state = "stopped" if not worker.is_alive() else "still running (stuck in a C call)"
+                error = f"{why}; snippet {state}, globals discarded"
             else:
                 error = box["error"]
                 if ns.get("result") is not None:

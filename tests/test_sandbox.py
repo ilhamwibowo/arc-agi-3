@@ -274,3 +274,26 @@ def test_level_reset_stops_batch_like_game_over():
     assert "TerminalStateError" in r.error and len(r.actions) == 2
     rec = tool.wm._rec()                                       # wm sees the reset as a death
     assert rec.transitions[-1][3] == "game_over"
+
+
+def test_timeout_actually_stops_a_pure_python_loop():
+    import threading
+    before = {t.name for t in threading.enumerate()}
+    tool = PythonTool(FakeSession(), timeout=0.3)
+    r = tool.run("while True:\n    pass")
+    assert "TimeoutError" in r.error and "snippet stopped" in r.error
+    assert "sandbox" not in {t.name for t in threading.enumerate()} - before
+
+
+def test_runaway_list_append_is_killed_before_host_memory_runs_out():
+    # The run-#4 killer: `while seen[cur]: path.append(...)` with `cur` never advancing.
+    tool = PythonTool(FakeSession(), timeout=0.5, mem_growth_limit=64 << 20)
+    r = tool.run("path = []\nwhile True:\n    path.append(bytearray(1 << 20))")
+    assert ("MemoryError" in r.error or "TimeoutError" in r.error) and "snippet stopped" in r.error
+    assert tool.run("print(1)").stdout == "1\n"
+
+
+def test_snippet_kill_cannot_be_swallowed_by_bare_except():
+    tool = PythonTool(FakeSession(), timeout=0.3)
+    r = tool.run("while True:\n    try:\n        pass\n    except Exception:\n        pass")
+    assert "snippet stopped" in r.error

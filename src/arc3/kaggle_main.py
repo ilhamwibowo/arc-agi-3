@@ -86,11 +86,38 @@ def build_components(mode: str, base_url: str, env_dir: str, api_key: str, llm_u
     return arena, make_session, agent_factory
 
 
+def cap_address_space(gb: Optional[float] = None) -> Optional[float]:
+    """Backstop for the sandbox memory guard: cap this (agent) process's virtual address space so a
+    runaway snippet gets MemoryError instead of the host OOM killer taking down the model server,
+    which lives in a separate process launched earlier (limits are not retroactive). Linux only;
+    ARC3_AS_CAP_GB overrides the default of 40 GB, 0 disables. Returns the cap applied in GB."""
+    import sys
+    if not sys.platform.startswith("linux"):
+        return None
+    if gb is None:
+        gb = float(os.environ.get("ARC3_AS_CAP_GB", "40"))
+    if gb <= 0:
+        return None
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        cap = int(gb * (1 << 30))
+        if hard != resource.RLIM_INFINITY:
+            cap = min(cap, hard)
+        resource.setrlimit(resource.RLIMIT_AS, (cap, hard))
+        say(f"agent process address space capped at {cap / (1 << 30):.0f} GB")
+        return cap / (1 << 30)
+    except (ImportError, ValueError, OSError) as e:
+        say(f"address-space cap not applied: {type(e).__name__}: {e}")
+        return None
+
+
 def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, model_name: str,
          model_ready=None, offline_subset=None, per_game_cap_seconds: float = 9 * 3600,
          max_active: int = 10, env_dir: str = OFFLINE_ENV_DIR, gate: Optional[PriorityGate] = None,
          abort=None, agent_overrides: Optional[dict] = None):
     mode = "competition" if competition else "offline"
+    cap_address_space()
     base_url = os.environ.setdefault("ARC_BASE_URL", DEFAULT_GATEWAY) if competition else ""
     api_key = os.environ.setdefault("ARC_API_KEY", DEFAULT_API_KEY) if competition else ""
     if competition:

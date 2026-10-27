@@ -64,7 +64,7 @@ class AgentConfig:
     tool_timeout: int = 30
     tool_output_tokens: int = 3000
     image_px_per_token: int = 32
-    send_images: bool = True
+    send_images: bool = False  # run #4 A/B: text-only calls cache 96 % vs 43 % with images, 22 % faster
 
 
 @dataclass
