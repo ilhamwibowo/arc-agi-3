@@ -2,8 +2,11 @@
 
 All games run as threads, but only `max_active` of them may hold a decode slot (one in-flight model
 request stream each). A game calls `gate.acquire(progress)` before a burst of model requests and keeps
-the slot across tool calls; it calls `gate.release(progress)` at handover points (after a context
-trim, when the prefix cache is cold anyway) and `gate.finish(progress)` when the game ends.
+the slot across tool calls; it calls `gate.release(progress)` at handover points and
+`gate.finish(progress)` when the game ends. `gate.should_yield(progress)` tells a holder whether a
+waiting game outranks it by the hysteresis factor; the agent asks at a context trim and, after
+holding a slot for 15 minutes, at every turn boundary (run #5: unconditional release at a trim
+cost four games 6,677-8,952 s of waiting, because the formula decays with tokens spent).
 
 When a slot frees up it goes to the waiting game with the highest priority
 
@@ -34,6 +37,7 @@ TAIL_MAX = 8.0                    # three or more levels after the current one
 TAIL_FADE_FRACTION = 0.2
 DEFAULT_LEVELS = 10
 UNSTARTED_PRIORITY = float("inf")
+YIELD_HYSTERESIS = 1.2            # a waiter must outrank the holder by this factor to take over
 
 
 @dataclass
@@ -173,6 +177,20 @@ class PriorityGate:
     def holds(self, game: GameProgress) -> bool:
         with self._cond:
             return game.game_id in self._active
+
+    def should_yield(self, game: GameProgress, hysteresis: float = YIELD_HYSTERESIS) -> bool:
+        """True when `game` holds a slot and some other waiting game's priority exceeds its own
+        by more than `hysteresis` (an unstarted waiter always wins). False when nothing waits or
+        the game holds no slot, so a release would only cost the prefix cache."""
+        with self._cond:
+            if game.game_id not in self._active:
+                return False
+            frac = self.run_fraction()
+            mine = priority(game, frac)
+            for gid, (_, p) in self._waiting.items():
+                if gid != game.game_id and priority(p, frac) > mine * hysteresis:
+                    return True
+            return False
 
     def _can_grant(self, game_id: str) -> bool:
         free = self.max_active - len(self._active)

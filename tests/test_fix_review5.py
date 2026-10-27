@@ -299,3 +299,144 @@ def test_retention_refuses_unfreezable_or_oversized_values_with_a_reason():
                  "def small():\n    return sum(SMALL)\n")
     assert r.retained_functions == ["small"] and tool.run("print(small())").stdout == "6\n"
     assert "frozen copies, up to 64 KB" in prompts.build_system_prompt()
+
+
+# ------------------------------------------------------------------ 6. slot handover
+
+def test_should_yield_needs_a_waiter_above_the_hysteresis():
+    import threading
+    from arc3.scheduler import GameProgress, PriorityGate, priority
+
+    gate = PriorityGate(max_active=1)
+    holder = GameProgress("holder", started=True, level=1, levels_total=7, actions_on_level=40)
+    assert gate.acquire(holder)
+    assert not gate.should_yield(holder)                       # nobody waits
+    mine = priority(holder)
+
+    def wait(p):
+        t = threading.Thread(target=lambda: gate.acquire(p, timeout=5), daemon=True)
+        t.start()
+        return t
+
+    near = GameProgress("near", started=True, level=1, levels_total=7, actions_on_level=30)
+    assert mine < priority(near) < mine * 1.2
+    t1 = wait(near)
+    assert _wait_for(lambda: "near" in [w for w, _ in gate.snapshot()["waiting"]])
+    assert not gate.should_yield(near)                         # not a holder
+    assert not gate.should_yield(holder)                       # within hysteresis: keep it
+    assert gate.should_yield(holder, hysteresis=1.0)
+    far = GameProgress("far", started=True, level=4, levels_total=7)
+    assert priority(far) > mine * 1.2
+    t2 = wait(far)
+    assert _wait_for(lambda: "far" in [w for w, _ in gate.snapshot()["waiting"]])
+    assert gate.should_yield(holder)
+    gate.release(holder)
+    assert _wait_for(lambda: gate.holds(far))
+    assert gate.should_yield(far) is False or priority(near) > priority(far) * 1.2
+    gate.finish(far); gate.finish(near)
+    t1.join(1); t2.join(1)
+    # An unstarted waiter always outranks a holder.
+    gate = PriorityGate(max_active=1)
+    assert gate.acquire(holder)
+    t = wait(GameProgress("new"))
+    assert _wait_for(lambda: "new" in [w for w, _ in gate.snapshot()["waiting"]])
+    assert gate.should_yield(holder)
+    gate.release(holder); t.join(1)
+
+
+def _wait_for(cond, timeout=2.0):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+class _YieldGate:
+    def __init__(self):
+        self.should, self.acquires, self.releases, self.holding = False, 0, 0, False
+
+    def acquire(self, progress, timeout=None):
+        if not self.holding:            # like PriorityGate: re-acquire while holding is a no-op
+            self.acquires += 1
+        self.holding = True
+        return True
+
+    def release(self, progress):
+        self.releases += 1
+        self.holding = False
+
+    def should_yield(self, progress):
+        return self.should
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_agent_releases_at_trim_only_when_outranked_and_rotates_after_15_minutes():
+    from agent_fakes import FakeSession, FakeTool
+    from arc3.agent import Agent, AgentConfig
+    from arc3.llm import FakeLLM
+    from arc3.scheduler import GameProgress
+
+    gate, clock = _YieldGate(), _Clock()
+    llm = FakeLLM([FakeLLM.code("action(['LEFT'])") for _ in range(6)])
+    agent = Agent(llm, AgentConfig(retry_sleep=0), tool_factory=FakeTool, gate=gate,
+                  progress=GameProgress("g"), clock=clock)
+    session = FakeSession()
+    agent.reset_game(session)
+    agent.context.trim = lambda *a, **k: 1          # every call "trims"
+    agent.play_turn(session)                        # nobody outranks us: keep the slot
+    assert agent.stats.trims == 1 and gate.releases == 0 and gate.acquires == 1
+    assert agent._slot_since == 1000.0
+    gate.should = True
+    agent.play_turn(session)                        # outranked at the trim: release, re-acquire
+    assert gate.releases == 1 and gate.acquires == 2
+    trims = [e for e in session.events if e.get("kind") == "trim"]
+    assert [e["released"] for e in trims] == [False, True]
+    # Turn boundary rotation: held for 15 minutes and outranked -> release before the turn.
+    agent.context.trim = lambda *a, **k: 0
+    clock.t += 100
+    agent.play_turn(session)                        # held 100 s: too soon
+    assert gate.releases == 1
+    clock.t += 900
+    gate.should = False
+    agent.play_turn(session)                        # long enough, but nobody outranks us
+    assert gate.releases == 1
+    gate.should = True
+    agent.play_turn(session)
+    assert gate.releases == 2 and gate.acquires == 3
+    rot = [e for e in session.events if e.get("kind") == "slot_rotate"]
+    assert len(rot) == 1 and rot[0]["held"] >= 900
+    assert agent._slot_since == clock.t              # the hold timer restarted on re-acquire
+
+
+def test_gate_without_should_yield_keeps_the_old_release_at_trim():
+    from agent_fakes import FakeSession, FakeTool
+    from arc3.agent import Agent, AgentConfig
+    from arc3.llm import FakeLLM
+    from arc3.scheduler import GameProgress
+
+    class OldGate:
+        def __init__(self):
+            self.releases = 0
+        def acquire(self, progress, timeout=None):
+            return True
+        def release(self, progress):
+            self.releases += 1
+
+    gate = OldGate()
+    agent = Agent(FakeLLM([FakeLLM.code("action(['LEFT'])")]), AgentConfig(retry_sleep=0),
+                  tool_factory=FakeTool, gate=gate, progress=GameProgress("g"))
+    session = FakeSession()
+    agent.reset_game(session)
+    agent.context.trim = lambda *a, **k: 1
+    agent.play_turn(session)
+    assert gate.releases == 1

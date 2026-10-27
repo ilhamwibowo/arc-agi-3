@@ -11,8 +11,12 @@ Interfaces assumed from other modules (fakes in tests):
 - tool: `PythonTool(session).run(code) -> ToolResult` (arc3.sandbox).
 - percept: `render_png(grid, scale) -> bytes`, `render_diff_png(before, after, scale) -> bytes`.
 - scheduler (optional): `PriorityGate.acquire(progress, timeout) -> bool` before each model call
-  (re-acquire while holding is a no-op, so the slot is kept across tool calls) and
-  `.release(progress)` at a context trim (handover). `GameProgress` counters are kept current.
+  (re-acquire while holding is a no-op, so the slot is kept across tool calls),
+  `.should_yield(progress) -> bool` and `.release(progress)`. The slot is released at a context
+  trim only when `should_yield` says a waiting game outranks us, and at a turn boundary once we
+  have held it for `slot_rotate_seconds` and `should_yield` is true (the next model call
+  re-acquires). A gate without `should_yield` is released at every trim. `GameProgress` counters
+  are kept current.
 """
 from __future__ import annotations
 
@@ -65,6 +69,7 @@ class AgentConfig:
     tool_output_tokens: int = 3000
     image_px_per_token: int = 32
     send_images: bool = False  # run #4 A/B: text-only calls cache 96 % vs 43 % with images, 22 % faster
+    slot_rotate_seconds: float = 900.0  # hand the decode slot over after this long, if outranked
 
 
 @dataclass
@@ -107,10 +112,12 @@ class Agent:
                  render_png: Optional[Callable] = None,
                  render_diff_png: Optional[Callable] = None,
                  sleep: Callable[[float], None] = time.sleep,
-                 gate=None, progress=None):
+                 gate=None, progress=None, clock: Callable[[], float] = time.time):
         self.llm = llm
         self.gate = gate
         self.progress = progress
+        self._clock = clock
+        self._slot_since: Optional[float] = None   # when we last took the decode slot
         self.cfg = config or AgentConfig()
         self._tool_factory = tool_factory
         self._render_png = render_png
@@ -277,10 +284,30 @@ class Agent:
         waited = time.time() - t0
         if waited > 1.0:
             self._trace({"kind": "slot_wait", "seconds": round(waited, 3)})
+        if self._slot_since is None:
+            self._slot_since = self._clock()
 
     def _release_slot(self) -> None:
         if self.gate is not None and self.progress is not None:
             self.gate.release(self.progress)
+        self._slot_since = None
+
+    def _should_yield(self) -> bool:
+        """Does a waiting game outrank us? Gates without should_yield always yield (old rule)."""
+        if self.gate is None or self.progress is None:
+            return False
+        fn = getattr(self.gate, "should_yield", None)
+        return True if fn is None else bool(fn(self.progress))
+
+    def _rotate_slot(self) -> None:
+        """Turn boundary: hand the slot over once we have held it long enough and are outranked,
+        so the priority formula rotates slots instead of waiting for a trim."""
+        if self._slot_since is None:
+            return
+        held = self._clock() - self._slot_since
+        if held >= self.cfg.slot_rotate_seconds and self._should_yield():
+            self._release_slot()
+            self._trace({"kind": "slot_rotate", "held": round(held, 1)})
 
     def _update_progress(self, session, ts: TurnStats) -> None:
         p = self.progress
@@ -324,6 +351,7 @@ class Agent:
         reset = getattr(session, "auto_reset_if_needed", None)
         if callable(reset):
             reset()
+        self._rotate_slot()
         cfg, ts, t0 = self.cfg, TurnStats(), time.time()
         opener = self._resume_text(session) if self.resume_next else self.build_opener(session)
         if getattr(self.context, "trimmed_since_last_user", False):
@@ -338,11 +366,14 @@ class Agent:
         acted, nudged, reason = False, False, ""
         while not reason:
             if self.context.trim(cfg.context_tokens, cfg.drain_tokens):
-                # the prefix cache is gone anyway: a good moment to hand the slot over
-                self._release_slot()
+                # The prefix cache is gone anyway, so hand the slot over if someone outranks us.
+                # Not unconditionally: run #5 games waited 6,677-8,952 s to get it back.
+                released = self._should_yield()
+                if released:
+                    self._release_slot()
                 self.stats.trims += 1
                 self._trace({"kind": "trim", "estimate": self.context.total_tokens(),
-                             "messages": len(self.context.messages)})
+                             "messages": len(self.context.messages), "released": released})
             resp = self._call_llm(deadline)
             self.stats.model_calls += 1
             ts.generated_tokens += resp.usage.get("completion_tokens", 0)
