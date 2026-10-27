@@ -66,3 +66,6 @@
   level start only (one cache miss per level).
 - Run #5 (full25, images on, pre-fix sandbox) still running; it carries the same OOM risk.
 - 15:50 Run #6 pushed: `wibowoilham/arc3-full25b` v1 — all 25 games, 3 h cap, text-only default + sandbox kill fix (commit fb7ea9b). Queues behind run #5.
+- 16:40 Run #6 v1 FAILED at SGLang boot in 70 s: "CUDA driver error: out of memory" at context creation. Cause: my new
+  40 GB RLIMIT_AS cap was set in the notebook process before SGLang was spawned, so the child inherited it.
+  Fix: launch_sglang resets RLIMIT_AS in the child (preexec_fn). Pushed `arc3-full25b` v2 (16:50).
