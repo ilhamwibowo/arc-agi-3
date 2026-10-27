@@ -111,3 +111,9 @@
 - Slot wait sum 1998 min (run #6: 2209 min); per game 15–132 min of the 180 min wall. KV pool 75 % mean / 99 % max with ~9.2 running requests: the KV pool, not the slot count, is the ceiling.
 - sb26 again 4/8 but no RESET loop this time (the idle guard was not in this build anyway).
 - Decision: run #8 = idle guard + 12 slots (MAX_ACTIVE, MAXREQ) + context 80k/drain 30k so 12 concurrent prompts fit the pool (12 × ~55k ≈ 660k). Risk: more trims. Compare vs run #6.
+
+### 2026-10-28 01:20 Run #8 result (arc3-full25d v1: idle guard, 12 slots, context 80k/drain 30k)
+- 95/183 levels, mean 0.431 (run #6 114/0.500, run #7 113/0.476). Regression entirely on throughput: 2610 calls at 49 s/call (run #7: 4626 at 23 s). Levels per call actually rose (0.036 vs 0.024), so the 80k context did not visibly hurt.
+- Cause: serve.log shows `cuda graph: False` whenever #running-req is 11 or 12; GRAPH_BS stopped at 10. Decode throughput by batch: ≤10 → 630–780 tok/s, 11–12 → 412–423 tok/s. KV 64 % mean / 84 % max, queue ~0, so the 12 prompts fit as planned.
+- Idle guard worked: 92 idle_release, 5 idle_park; sb26 back to 8/8 (win). New wins sc25 6/6, sb26; losses m0r0 0/6, ls20 1/7, g50t 0/7 (throughput-starved).
+- Fix: GRAPH_BS += (11, 12). Run #9 = same config with graphs captured. Quota after run #9 ≈ 25.5/30 h.

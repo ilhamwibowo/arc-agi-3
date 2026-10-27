@@ -32,7 +32,7 @@ PREFIX = "/tmp/sgl-pennyroyal"
 
 CFG = dict(CTX=139264, MEMFRAC=0.96, MAXREQ=12, MAMBA_CACHE=60, CHUNK=8192, MAX_PREFILL=16384,
            KVDTYPE="fp8_e4m3", SSM_DTYPE="bfloat16", BACKEND="flashinfer", SPEC_STEPS=3,
-           GRAPH_BS=(1, 2, 4, 7, 8, 9, 10))
+           GRAPH_BS=(1, 2, 4, 7, 8, 9, 10, 11, 12))  # run #8: no graph above bs 10 halved decode (420 vs 750 tok/s)
 # Integrity pins of the FR-Spec hot-token map and the tokenizer it was built for.
 TOKEN_MAP_SHA = "becfa41d394b86c26c632bea8f3c6ea64bbb76d7b238d8673c06afae21269f25"
 TOKENIZER_SHA = "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
