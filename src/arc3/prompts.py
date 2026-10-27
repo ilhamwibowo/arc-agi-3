@@ -53,7 +53,8 @@ UNDO = "\n- `UNDO`: reverts the previous action when available. Check what it re
 RESET = ("\n- `RESET`: restarts the current level from its start board and keeps completed levels. "
          "It costs one action. Use it when the position is lost or the move budget left cannot "
          "cover your plan. NEVER burn moves to exhaust a budget or to die on purpose: that costs "
-         "dozens of actions; RESET costs one.")
+         "dozens of actions; RESET costs one. The start board is deterministic, so actions may "
+         "follow RESET in the same `action([...])` call.")
 
 SIGNALS = """\
 ## Reading results

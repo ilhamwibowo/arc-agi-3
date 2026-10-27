@@ -28,7 +28,7 @@ def _interior(g):
 
 # ------------------------------------------------------------------ 1. RESET
 
-def test_reset_restarts_level_stops_batch_and_marks_wm_record(tmp_path):
+def test_reset_restarts_level_continues_batch_and_marks_wm_record(tmp_path):
     s = _session("ls20", tmp_path)
     assert "RESET" in s.valid_actions
     tool = PythonTool(s)
@@ -36,22 +36,27 @@ def test_reset_restarts_level_stops_batch_and_marks_wm_record(tmp_path):
     # A RESET before any move would change nothing: refused, and no action is spent.
     r = tool.run("print(action(['RESET'])['stop_reason'])")
     assert r.stdout.strip() == "reset_noop" and s.actions == 0
+    # fix-review-5: a model RESET no longer ends the batch; the moves after it run from the start
+    # board (run #5 lost 6 calls to action([RESET, *replay]) raising TerminalStateError).
     r = tool.run("res = action(['UP', 'UP', 'RESET', 'DOWN'])\n"
                  "print(res['executed'], res['skipped'], res['stop_reason'])")
     assert r.error is None, r.error
-    assert r.stdout.strip() == "3 1 reset"
-    assert np.array_equal(_interior(s.current.grid), _interior(start))
-    assert r.actions[-1].stop_reason == "reset" and r.actions[-1].skipped == 1
+    assert r.stdout.strip() == "4 0 None"
+    assert np.array_equal(_interior(r.actions[2].after), _interior(start))
+    assert r.actions[2].action.name == "RESET" and r.actions[2].stop_reason is None
+    assert r.actions[3].action.name == "DOWN" and r.actions[3].executed
     text = prompts.tool_result_text(r.stdout, r.error, r.actions)
-    assert "RESET: level restarted from its start board" in text
-    assert "stopped: reset, 1 requested action(s) not run" in text
-    # A second RESET right away is refused (no-op), so it costs nothing.
+    assert "RESET: level restarted from its start board" in text and "stopped" not in text
+    # A RESET right after the DOWN is accepted (one move since the restart); the next one is a
+    # no-op and costs nothing.
     r = tool.run("print(action('RESET')['stop_reason'])")
-    assert r.stdout.strip() == "reset_noop" and s.actions == 3
-    # wm: moves before the RESET stay in this level's record; the RESET is a restart boundary
+    assert r.stdout.strip() == "None" and s.actions == 5
+    r = tool.run("print(action('RESET')['stop_reason'])")
+    assert r.stdout.strip() == "reset_noop" and s.actions == 5
+    # wm: moves before a RESET stay in this level's record; each RESET is a restart boundary
     # and the planner starts from the post-RESET board.
     rec = tool._wm_record()
-    assert len(rec.transitions) == 2 and rec.restarts == [2]
+    assert len(rec.transitions) == 3 and rec.restarts == [2, 3]
     tool.wm.register(lambda st, a: st, lambda st: "ongoing",
                      init=lambda g, lv: {"grid": g.copy(), "fresh": True})
     cur = tool.wm.current_state()
@@ -59,7 +64,7 @@ def test_reset_restarts_level_stops_batch_and_marks_wm_record(tmp_path):
     # Moves after the RESET continue the same level record.
     tool.run("action(['DOWN'])")
     rec = tool._wm_record()
-    assert len(rec.transitions) == 3 and rec.restarts == [2]
+    assert len(rec.transitions) == 4 and rec.restarts == [2, 3]
 
 
 def test_reset_hidden_when_not_exposed(tmp_path):

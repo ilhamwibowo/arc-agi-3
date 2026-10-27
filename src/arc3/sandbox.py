@@ -3,7 +3,8 @@
 `PythonTool(session).run(code)` executes a model snippet with game globals (frame views, history,
 `frame_diff`, `action`) and returns a ToolResult. Actions go through `session.step`, which owns the
 environment; this module adds the per-snippet guards (batch no-op stop, stale-state block, terminal
-latch), output capping and retained helper functions.
+latch on game over / level reset / level completed, not on a model RESET), output capping and
+retained helper functions.
 
 Design notes:
 - In-process, one worker thread per call with a 30 s wall clock and a 3 GB RSS-growth cap. On
@@ -489,14 +490,13 @@ class PythonTool:
                 summary["animation"] = anim
                 cur = ns["current_frame"]
                 self.last_animation_frames = [FrameView(g, cur.step, cur.level) for g in chain]
-            restarted = a.name == "RESET"   # a new start board: the model must look at it
-            if (res.level_completed or res.game_over or res.run_complete or res.level_reset
-                    or restarted):
+            # A model RESET does not latch: the start board is deterministic, so a batch may
+            # continue with the moves that follow it (run #5: action([RESET, *replay]) raised 6x).
+            if res.level_completed or res.game_over or res.run_complete or res.level_reset:
                 run.terminal = True
                 summary["stop_reason"] = "game_over" if res.game_over else (
                     "level_completed" if res.level_completed else
-                    "level_reset" if res.level_reset else
-                    "run_complete" if res.run_complete else "reset")
+                    "level_reset" if res.level_reset else "run_complete")
                 break
             if not res.gameplay_changed:
                 run.ineffective = True
