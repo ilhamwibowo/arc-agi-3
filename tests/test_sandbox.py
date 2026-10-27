@@ -297,3 +297,12 @@ def test_snippet_kill_cannot_be_swallowed_by_bare_except():
     tool = PythonTool(FakeSession(), timeout=0.3)
     r = tool.run("while True:\n    try:\n        pass\n    except Exception:\n        pass")
     assert "snippet stopped" in r.error
+
+
+def test_sglang_child_resets_address_space_cap():
+    # run #6: the cap set in the notebook process was inherited by SGLang → CUDA init OOM.
+    import inspect
+    from arc3 import kaggle_serve
+    src = inspect.getsource(kaggle_serve.launch_sglang)
+    assert "preexec_fn=_unlimit_address_space" in src
+    kaggle_serve._unlimit_address_space()  # must be harmless on any platform

@@ -250,6 +250,18 @@ def server_args(venv: Path, model_dir: str, draft_view: Path, token_map: Path,
     return args
 
 
+def _unlimit_address_space() -> None:
+    """Runs in the SGLang child before exec. kaggle_main caps the agent process's RLIMIT_AS as a
+    runaway-snippet backstop and the child would inherit it; CUDA needs an unbounded virtual
+    address space (run #6 died at context creation with 'CUDA driver error: out of memory')."""
+    try:
+        import resource
+        _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        resource.setrlimit(resource.RLIMIT_AS, (hard, hard))
+    except Exception:
+        pass
+
+
 def launch_sglang(log_path: str, port: int = PORT, model_dir: str = MODEL_DIR,
                   draft_dir: str = DRAFT_MODEL_DIR, wheelhouse: str = WHEELHOUSE_DIR,
                   prefix: str = PREFIX) -> subprocess.Popen:
@@ -274,7 +286,7 @@ def launch_sglang(log_path: str, port: int = PORT, model_dir: str = MODEL_DIR,
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "ab", buffering=0) as logf:
         proc = subprocess.Popen(args, env=env, stdout=logf, stderr=subprocess.STDOUT,
-                                start_new_session=True)
+                                start_new_session=True, preexec_fn=_unlimit_address_space)
     say(f"SGLang pid {proc.pid}, log {log_path}")
     return proc
 

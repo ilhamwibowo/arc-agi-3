@@ -88,8 +88,9 @@ def build_components(mode: str, base_url: str, env_dir: str, api_key: str, llm_u
 
 def cap_address_space(gb: Optional[float] = None) -> Optional[float]:
     """Backstop for the sandbox memory guard: cap this (agent) process's virtual address space so a
-    runaway snippet gets MemoryError instead of the host OOM killer taking down the model server,
-    which lives in a separate process launched earlier (limits are not retroactive). Linux only;
+    runaway snippet gets MemoryError instead of the host OOM killer taking down the model server.
+    The server is a child process launched after this and would inherit the cap, so
+    kaggle_serve.launch_sglang resets RLIMIT_AS in the child before exec. Linux only;
     ARC3_AS_CAP_GB overrides the default of 40 GB, 0 disables. Returns the cap applied in GB."""
     import sys
     if not sys.platform.startswith("linux"):
