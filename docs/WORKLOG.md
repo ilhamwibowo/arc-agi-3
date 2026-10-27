@@ -91,3 +91,14 @@
   6000 + "think in short bursts"; retained helpers freeze ≤64 KB of referenced data; slot released at trim only
   when outranked (should_yield, 1.2×) and rotated after 15 min held.
 - 18:20 Run #7 pushed: `wibowoilham/arc3-full25c` v1 — all 25 games, 3 h cap, text-only + fix round (commit b9399d0).
+
+## 2026-10-27 20:30 WIB — run #6 result (runs/kaggle/arc3-full25b/2): all 25 games, 3 h cap, TEXT-ONLY, sandbox fix (commit fb7ea9b)
+- 114/183 levels, mean score 0.500 (run #5 images-on: 86/183, 0.378; dfranzen reference 0.465). 25 ok, 0 errors,
+  RAM flat. Wins: ar25 8/8, cd82 6/6, ft09 6/6, lp85 8/8, m0r0 6/6, tr87 6/6. Cache 97 %, 18 s/call (50 in run #5),
+  5882 calls (2149), 7.9M gen tokens. Slot wait still 55 % of wall. Cuts 128/5882 (2.2 %), 453 calls > 60 s.
+- Regressions: g50t 0/7 (5/7 in #5), bp35 1/9, vc33 3/7 again, sb26 4/8 (8/8 in every earlier run).
+- sb26 pathology: the model declared level 5 "unsolvable" (miscounted palette) and then PARKED: 1,598 calls of
+  `action(['RESET'])` (refused as reset_noop, 1 s each, 68 tokens) across 130 tool-cap turns for 2.7 h, holding a
+  decode slot the whole time. No harness guard caught a turn with zero effective actions. Fix next: idle-turn
+  detection → release slot + "idling earns nothing" notice, sleep the game after repeated idle turns; sandbox
+  refuses a second consecutive no-op RESET.
