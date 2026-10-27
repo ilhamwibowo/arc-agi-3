@@ -864,6 +864,100 @@ class WM:
         return {"here": [n for n in names if n not in here],
                 "ever": [n for n in names if n not in ever]}
 
+    # ---- opener evidence (harness side; the model sees the formatted lines in the opener)
+
+    def _objects(self, grid) -> list[dict]:
+        """Non-background components outside the HUD band, biggest first."""
+        g = np.asarray(grid)
+        bg, hud = background(g), self.border(g)
+        rows, cols = g.shape
+        out = []
+        for comp in components(g):
+            r0, c0, r1, c1 = comp["bbox"]
+            if comp["color"] == bg or (hud and (r1 < hud or c1 < hud or r0 >= rows - hud
+                                                or c0 >= cols - hud)):
+                continue
+            out.append(comp)
+        out.sort(key=lambda k: -k["size"])
+        return out
+
+    def unclicked_objects(self, record=None, max_items: int = 8) -> dict:
+        """Objects on the current board whose colour+shape was never clicked on this level.
+        Identity is colour and shape, not position, so a toggled copy counts as tried. Returns
+        {'objects': [{color, size, row, col}] (biggest first, at most max_items), 'total'}."""
+        rec = self._rec(record)
+        clicked = set()
+        for before, action, _, _ in rec.transitions:
+            a = norm_action(action)
+            if a["action"] != "MOUSE" or a["row"] is None:
+                continue
+            comp = _component_at(np.asarray(before), int(a["row"]), int(a["col"]))
+            if comp is not None:
+                clicked.add((comp["color"], _shape(comp)))
+        cur = np.asarray(rec.current_grid)
+        objs = [k for k in self._objects(cur) if (k["color"], _shape(k)) not in clicked]
+        shown = []
+        for k in objs[:max_items]:
+            r0, c0, _, _ = k["bbox"]
+            shown.append({"color": k["color"], "size": k["size"], "row": int(r0), "col": int(c0)})
+        return {"objects": shown, "total": len(objs)}
+
+    def blocked_moves(self, record=None) -> dict:
+        """Directional moves that moved nothing, with the colours of the cells the avatar would
+        have entered, plus the colours successful moves did enter. Returns {'blocked': {name:
+        {'count', 'colors' (ints; -1 = the board edge)}}, 'entered': [ints]}; 'blocked' is empty
+        when every recorded move moved something."""
+        rec = self._rec(record)
+        motion = self.induce_motion(record=rec)
+        avatars = motion["avatar_candidates"]
+        if not avatars:
+            return {"blocked": {}, "entered": []}
+        color = avatars[0]["color"]
+        blocked: dict = {}
+        entered: set = set()
+        for i, (before, action, _, out) in enumerate(rec.transitions):
+            name = norm_action(action)["action"]
+            info = motion["actions"].get(name)
+            if info is None or out != "ongoing":
+                continue
+            is_blocked = i in info["blocked_cases"]
+            dy, dx = info["dy"], info["dx"]
+            if is_blocked:
+                entry = blocked.setdefault(name, {"count": 0, "colors": set()})
+                entry["count"] += 1
+            if (dy, dx) == (0, 0):
+                continue   # never seen this move succeed: no idea which cells it targets
+            g = np.asarray(before)
+            comps = components(g, {color})
+            if not comps:
+                continue
+            av = max(comps, key=lambda k: k["size"])
+            target = _entered_colors(g, av["cells"], dy, dx)
+            (entry["colors"] if is_blocked else entered).update(target)
+        return {"blocked": {n: {"count": e["count"], "colors": sorted(e["colors"])}
+                            for n, e in blocked.items()},
+                "entered": sorted(entered)}
+
+    def novelty(self, record=None, window: int = 20) -> dict:
+        """How much the last `window` actions explored, by view_hash (HUD blanked). Returns
+        {'actions', 'states' (distinct boards seen this level), 'window' (actions counted),
+        'new_in_window', 'top_noop': (action, times) or None}."""
+        rec = self._rec(record)
+        seen = {self.view_hash(rec.level_start_grid)}
+        new_flags: list[bool] = []
+        noops: Counter = Counter()
+        for before, action, after, _ in rec.transitions:
+            hb, ha = self.view_hash(before), self.view_hash(after)
+            seen.add(hb)
+            new_flags.append(ha not in seen)
+            seen.add(ha)
+            if hb == ha:
+                noops[action_str(action)] += 1
+        tail = new_flags[-window:]
+        top = noops.most_common(1)
+        return {"actions": len(rec.transitions), "states": len(seen), "window": len(tail),
+                "new_in_window": sum(tail), "top_noop": top[0] if top else None}
+
     def goal_menu(self, record=None, max_items: int = 20) -> list:
         """Candidate goal predicates (name, fn) built from the record, for wm.plan(goal=fn):
         avatar_reaches_color_c (avatar colour now covers a cell that was colour c),
@@ -979,6 +1073,38 @@ def _component_moves(before: np.ndarray, after: np.ndarray) -> list[tuple[int, t
                     moves.append((b["color"], off))
                     break
     return moves
+
+
+def _component_at(grid: np.ndarray, r: int, c: int) -> Optional[dict]:
+    """The same-colour 4-connected component containing (r, c), or None off-board/background."""
+    rows, cols = grid.shape
+    if not (0 <= r < rows and 0 <= c < cols) or int(grid[r, c]) == background(grid):
+        return None
+    color = grid[r, c]
+    seen, stack, cells = {(r, c)}, [(r, c)], []
+    while stack:
+        y, x = stack.pop()
+        cells.append((y, x))
+        for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+            if 0 <= ny < rows and 0 <= nx < cols and (ny, nx) not in seen and grid[ny, nx] == color:
+                seen.add((ny, nx))
+                stack.append((ny, nx))
+    rs = [p[0] for p in cells]
+    cs = [p[1] for p in cells]
+    return {"color": int(color), "cells": frozenset(cells), "size": len(cells),
+            "bbox": (min(rs), min(cs), max(rs), max(cs))}
+
+
+def _entered_colors(grid: np.ndarray, cells, dy: int, dx: int) -> set:
+    """Colours of the cells a footprint moves onto when shifted by (dy, dx); -1 for the edge."""
+    rows, cols = grid.shape
+    out = set()
+    for r, c in cells:
+        nr, nc = r + dy, c + dx
+        if (nr, nc) in cells:
+            continue
+        out.add(int(grid[nr, nc]) if 0 <= nr < rows and 0 <= nc < cols else -1)
+    return out
 
 
 def _shape(comp: dict) -> frozenset:

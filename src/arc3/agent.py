@@ -195,13 +195,25 @@ class Agent:
                 images.append(("diff of the previous call (changed cells bright, rest dimmed)", png))
         return images
 
+    def _evidence(self) -> Optional[dict]:
+        """Per-level facts from the sandbox (unclicked objects, blocked moves, novelty)."""
+        fn = getattr(self.tool, "evidence", None)
+        if not callable(fn):
+            return None
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - evidence is a nice-to-have; never lose a turn
+            self._trace({"kind": "evidence_error", "error": repr(e)[:300]})
+            return None
+
     def build_opener(self, session) -> Any:
         obs = session.current
         images = self._opener_images(session)
         text = prompts.build_opener(
             self.last_results, step=obs.step, level=obs.levels_completed,
             win_levels=obs.win_levels, valid_actions=list(session.valid_actions),
-            first_turn=self.first_turn, images=[c for c, _ in images], retained=self.retained)
+            first_turn=self.first_turn, images=[c for c, _ in images], retained=self.retained,
+            evidence=self._evidence())
         if not images:
             return text
         parts = [text_part(text)]

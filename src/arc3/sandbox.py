@@ -321,6 +321,22 @@ class PythonTool:
         text = "; ".join(parts)
         return text if len(text) <= limit else text[:limit - 3] + "..."
 
+    def evidence(self) -> dict:
+        """Per-level facts for the opener (unclicked objects, blocked moves, novelty), from the
+        wm record. Each part is independent; one that fails is left out rather than lose a turn."""
+        out: dict = {}
+        try:
+            rec = self._wm_record()
+        except Exception:  # noqa: BLE001 - no record (e.g. before the first observation)
+            return out
+        for key, fn in (("unclicked", self.wm.unclicked_objects), ("blocked", self.wm.blocked_moves),
+                        ("novelty", self.wm.novelty)):
+            try:
+                out[key] = fn(rec)
+            except Exception as e:  # noqa: BLE001
+                out[key + "_error"] = f"{type(e).__name__}: {e}"[:120]
+        return out
+
     # ---- globals -------------------------------------------------------------------------------
 
     def _builtins(self, run: _Run) -> dict:

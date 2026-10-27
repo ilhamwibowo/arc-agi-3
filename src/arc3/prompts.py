@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
-from arc3.types import COLOR_LEGEND, ActionResult
+from arc3.types import COLOR_LEGEND, COLOR_LETTERS, ActionResult
 
 DEFAULT_MODULES = ("bisect", "collections", "copy", "fractions", "functools", "heapq",
                    "itertools", "json", "math", "operator", "random", "re", "statistics",
@@ -80,7 +80,8 @@ STRATEGY = """\
 - Prefer the shortest reliable sequence. Inside a batch, check in code that each step did what you predicted and stop when it did not.
 - Do not frame goals as absolute coordinates; reason about objects and relations (reach, align, match, fill, sort, mirror, count).
 - Levels usually extend earlier mechanics: carry what you learned forward as a hypothesis, look closely at new kinds of objects (they usually matter), and re-check whether the goal changed.
-- The game is deterministic: a sequence that failed once will fail again."""
+- The game is deterministic: a sequence that failed once will fail again.
+- Before 20 actions of trial and error on a level, click each unclicked object once. If the last 20 actions reached fewer than 5 new states, stop probing variants and test something not yet examined."""
 
 
 # Worked example shown in WORLD_MODEL. Kept separate so a test can execute it (tests/test_prompts.py).
@@ -222,6 +223,46 @@ def budget_line(results: Sequence[ActionResult], can_reset: bool = True) -> Opti
     return text + ("; if it cannot, RESET first." if can_reset else ".")
 
 
+def _colour(c: int) -> str:
+    return "edge" if c < 0 else (COLOR_LETTERS[c] if 0 <= c < len(COLOR_LETTERS) else str(c))
+
+
+def evidence_lines(evidence: Optional[dict], valid_actions: Sequence[str] = ()) -> list[str]:
+    """Opener lines from PythonTool.evidence(): unclicked objects (click games), blocked moves
+    (when at least one move was refused) and the novelty counter. Each part is skipped when it
+    has nothing to say."""
+    if not evidence:
+        return []
+    lines = []
+    un = evidence.get("unclicked") or {}
+    if "MOUSE" in valid_actions and un.get("objects"):
+        items = ", ".join(f"{_colour(o['color'])} {o['size']}px at ({o['row']},{o['col']})"
+                          for o in un["objects"])
+        more = un["total"] - len(un["objects"])
+        lines.append("Objects never clicked on this level: " + items
+                     + (f" (+{more} more)" if more > 0 else "") + ".")
+    bl = evidence.get("blocked") or {}
+    if bl.get("blocked"):
+        parts = []
+        for name, e in bl["blocked"].items():
+            cols = ", ".join(_colour(c) for c in e["colors"])
+            parts.append(f"{name} refused {e['count']}x"
+                         + (f" (target cells colour {cols})" if cols else ""))
+        text = "Blocked moves: " + ", ".join(parts)
+        if bl.get("entered"):
+            text += "; successful moves entered " + ", ".join(_colour(c) for c in bl["entered"])
+        lines.append(text + ".")
+    nv = evidence.get("novelty") or {}
+    if nv.get("actions"):
+        text = (f"This level: {nv['actions']} actions, {nv['states']} distinct states; last "
+                f"{nv['window']} actions reached {nv['new_in_window']} new states")
+        if nv.get("top_noop"):
+            name, times = nv["top_noop"]
+            text += f"; {name} was a no-op {times} time{'s' if times != 1 else ''}"
+        lines.append(text + ".")
+    return lines
+
+
 def summarize_sequence(results: Sequence[ActionResult], max_lines: int = 12) -> list[str]:
     real = [r for r in results if not r.automatic]
     if not real:
@@ -251,8 +292,10 @@ def summarize_sequence(results: Sequence[ActionResult], max_lines: int = 12) -> 
 
 def build_opener(results: Sequence[ActionResult], step: int, level: int, win_levels: int,
                  valid_actions: Sequence[str], first_turn: bool = False,
-                 images: Sequence[str] = (), retained: Sequence[str] = ()) -> str:
-    """Text of the user message that starts a turn. `images` are captions of attached images."""
+                 images: Sequence[str] = (), retained: Sequence[str] = (),
+                 evidence: Optional[dict] = None) -> str:
+    """Text of the user message that starts a turn. `images` are captions of attached images;
+    `evidence` is PythonTool.evidence() (see evidence_lines)."""
     lines: list[str] = []
     lines.extend(summarize_sequence(results))
     fatal = next((r for r in results if r.game_over), None)
@@ -266,6 +309,7 @@ def build_opener(results: Sequence[ActionResult], step: int, level: int, win_lev
     budget = budget_line(results, can_reset="RESET" in valid_actions)
     if budget:
         lines.append(budget)
+    lines.extend(evidence_lines(evidence, valid_actions))
     total = f" of {win_levels}" if win_levels else ""
     lines.append(f"Current state: step {step}, level {level + 1}{total} "
                  f"({level} completed). Valid actions: {', '.join(valid_actions)}.")
