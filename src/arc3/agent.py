@@ -48,9 +48,9 @@ PYTHON_TOOL = {
 
 @dataclass
 class AgentConfig:
-    context_tokens: int = 80_000        # prompt budget; trimming starts above this (run #8: 116k->80k, KV was the slot bound at 75 % mean/99 % max)
+    context_tokens: int = 116_000       # prompt budget; trimming starts above this (80k in runs #8-#9 doubled trims and cost ~15 levels)
     output_tokens: int = 6_000          # max_tokens per completion; a cut at 8k cost 150-285 s in run #5
-    drain_tokens: int = 30_000          # trim down to context_tokens - drain_tokens
+    drain_tokens: int = 58_000          # trim down to context_tokens - drain_tokens
     yield_tokens: int = 2048            # generated tokens per turn before yielding
     temperature: float = 0.7
     top_p: float = 0.95
@@ -60,8 +60,8 @@ class AgentConfig:
     images_window: int = 1   # >1 breaks the server prefix cache on every new image (run #1)
     keep_reasoning: bool = True
     max_tool_calls_per_turn: int = 12
-    idle_turns_notice: int = 3    # consecutive turns with no executed action → notice + release slot
-    idle_turns_sleep: int = 6     # ... → park the game for idle_sleep_seconds (run #6 sb26: 130 idle turns)
+    idle_turns_notice: int = 3    # consecutive turns with no executed action → opener notice
+    idle_turns_sleep: int = 8     # ... → release the slot and park for idle_sleep_seconds (run #6 sb26: 130 idle turns)
     idle_sleep_seconds: float = 600.0
     max_llm_failures: int = 10          # consecutive failed model calls before giving up
     retry_sleep: float = 10.0
@@ -438,10 +438,9 @@ class Agent:
         self.resume_next = not acted
         self.turn_end_reason = reason
         self.idle_turns = 0 if ts.actions else self.idle_turns + 1
-        if self.idle_turns >= cfg.idle_turns_notice and self._slot_since is not None:
-            # an idling game must not hold a decode slot (run #6 sb26 parked for 2.7 h on RESET no-ops)
-            self._release_slot()
-            self._trace({"kind": "idle_release", "idle_turns": self.idle_turns})
+        # Idle turns only get the notice; the slot is released by _park at idle_turns_sleep.
+        # Run #9 released at the notice threshold: 169 releases, each re-waiting ~8 min for a slot
+        # and dropping the warm prefix, on turns that were mostly legitimate analysis.
         ts.seconds = time.time() - t0
         self._accumulate(ts)
         self._update_progress(session, ts)

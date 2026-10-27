@@ -53,7 +53,7 @@ TRUE_SUBMISSION = os.environ.get("KAGGLE_IS_COMPETITION_RERUN", "").strip().lowe
 OFFLINE_SUBSET = __OFFLINE_SUBSET__        # offline only: None=all, int=first n, or list of id prefixes
 PER_GAME_CAP_SECONDS = __PER_GAME_CAP__
 AGENT_OVERRIDES = __AGENT_OVERRIDES__      # {game-id prefix: {AgentConfig field: value}} for A/B runs
-MAX_ACTIVE = 12
+MAX_ACTIVE = 10
 PORT = 30000
 WORKING = "/kaggle/working"
 ARC3_ROOT = WORKING                        # package unpacked to /kaggle/working/arc3

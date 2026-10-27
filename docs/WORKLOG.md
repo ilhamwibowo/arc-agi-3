@@ -117,3 +117,8 @@
 - Cause: serve.log shows `cuda graph: False` whenever #running-req is 11 or 12; GRAPH_BS stopped at 10. Decode throughput by batch: ≤10 → 630–780 tok/s, 11–12 → 412–423 tok/s. KV 64 % mean / 84 % max, queue ~0, so the 12 prompts fit as planned.
 - Idle guard worked: 92 idle_release, 5 idle_park; sb26 back to 8/8 (win). New wins sc25 6/6, sb26; losses m0r0 0/6, ls20 1/7, g50t 0/7 (throughput-starved).
 - Fix: GRAPH_BS += (11, 12). Run #9 = same config with graphs captured. Quota after run #9 ≈ 25.5/30 h.
+
+### 2026-10-28 04:30 Run #9 result (arc3-full25e v1: run #8 config + cuda graphs for bs 11-12)
+- Throughput fixed: 829 tok/s mean, graphs captured at bs 11-12, 4961 calls at 25.7 s, KV 68 % mean / 85 % max, slot wait 1742 min. But 98/183 levels, mean 0.377 (run #7 113/0.476 with fewer calls). Wins tu93 9/9, vc33 7/7, m0r0, lp85, tr87, ft09, cd82 (slow: 431 actions → 0.226).
+- Two causes visible in traces: (1) context 80k/drain 30k → 309 trims vs 154, model re-explores after each trim (10753 actions vs 9157 for fewer levels); (2) idle guard released the slot at the notice threshold 169 times; each release re-waited for a slot (≈364 min total, tr87 95 min, g50t 52 min, re86 40 min) and dropped the warm prefix, mostly on legitimate analysis turns.
+- Run #10 (arc3-full25f): back to run #6/#7 serving config (10 slots, 116k/58k context; GRAPH_BS keeps 11-12, harmless), idle notice stays but no slot release until the park at 8 idle turns. Expected ≈ run #7. Quota after run #10 ≈ 28.8/30 h → last run this week.

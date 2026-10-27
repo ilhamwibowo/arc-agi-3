@@ -311,7 +311,7 @@ def test_idle_turns_release_slot_then_park():
     stats = agent.play_game(FakeSession())
     assert stats.end_reason == "win"
     assert naps == [600, 600]                  # parked after idle turns 6 and 9 (counter falls back to 3)
-    assert gate.releases >= 2                  # released at the notice threshold, and when parked
+    assert gate.releases == 3                  # released only when parked (twice) and at game end
     notices = [m for c in llm.calls for m in user_texts(c["messages"])[-1:] if "Idling earns nothing" in m]
     assert len(notices) >= 3                   # shown from the 3rd idle turn on, and after parking
     assert agent.idle_turns == 0               # the real action cleared the counter
