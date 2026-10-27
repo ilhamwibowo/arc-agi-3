@@ -85,3 +85,9 @@
   Levers: (1) text-only (run #6); (2) more slots via smaller context (trim target ~60k, --max-running-requests
   14–16); (3) scheduler: allocate slot time by progress rate, starve games at 0 levels after a probe budget;
   (4) shorter thinking on routine turns.
+- 18:15 Trace review of run #5 weak games (docs/trace-review-run5.md) + fix round (docs/fix-review-5.md, commits
+  f3cd11b..25dfd4b, 146 tests): RESET no longer ends a batch; wm helpers take grid/frame/nothing and
+  untried_actions uses view_hash; opener evidence lines (unclicked objects, blocked moves, novelty); output cap
+  6000 + "think in short bursts"; retained helpers freeze ≤64 KB of referenced data; slot released at trim only
+  when outranked (should_yield, 1.2×) and rotated after 15 min held.
+- 18:20 Run #7 pushed: `wibowoilham/arc3-full25c` v1 — all 25 games, 3 h cap, text-only + fix round (commit b9399d0).
