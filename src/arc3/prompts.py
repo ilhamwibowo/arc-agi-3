@@ -107,7 +107,7 @@ Write your rules as two functions; the global `wm` checks and searches them free
 Example:
 """ + WM_EXAMPLE + """
 - Full simulator option: `wm.register(transition, outcome, init=init)` (transition over `state['grid']`; outcome 'ongoing'/'level_complete'/'game_over'), then `wm.verify()`, `p = wm.plan()`, `wm.execute(p['actions'])`.
-- Free: `wm.induce_motion()`, `wm.untried_actions()`, `wm.transition_graph()`."""
+- Free (no model): `wm.induce_motion()`, `wm.untried_actions()`, `wm.transition_graph()`, `wm.click_candidates()` (one MOUSE per object), `wm.goal_menu()` -> [(name, pred)]. Grid arguments are optional (default current board; a frame works)."""
 
 
 def build_system_prompt(hud_border: int = 4, expose_undo: bool = True, expose_reset: bool = True,

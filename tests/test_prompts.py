@@ -25,7 +25,8 @@ def test_system_prompt_renders_without_format_leftovers():
 
 def test_world_model_section_size():
     # Brief: lead with check/plan_abstract and keep the section near 450 tokens (~1600 chars).
-    assert len(prompts.WORLD_MODEL) <= 1610
+    # fix-review-5 added click_candidates/goal_menu and the optional-grid note (+150 chars).
+    assert len(prompts.WORLD_MODEL) <= 1770
     assert prompts.WORLD_MODEL.index("wm.check") < prompts.WORLD_MODEL.index("wm.register")
 
 

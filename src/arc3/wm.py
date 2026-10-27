@@ -423,10 +423,24 @@ class WM:
             names = sorted(seen) or list(DIRECTIONS)
         return names
 
-    def click_candidates(self, grid, max_clicks: int = MAX_CLICKS) -> list[dict]:
+    def _grid_arg(self, x=None) -> np.ndarray:
+        """Resolve the model's grid argument: None (the current board), a FrameView-like object
+        with `.grid`, a model state dict with 'grid', a Record, or an array."""
+        if x is None:
+            return np.asarray(self._rec().current_grid)
+        if isinstance(x, Record):
+            return np.asarray(x.current_grid)
+        if isinstance(x, dict) and "grid" in x:
+            return np.asarray(x["grid"])
+        if hasattr(x, "grid") and not isinstance(x, np.ndarray):
+            return np.asarray(x.grid)
+        return np.asarray(x)
+
+    def click_candidates(self, grid=None, max_clicks: int = MAX_CLICKS) -> list[dict]:
         """One MOUSE action per segmented component (background and HUD border band excluded),
-        clicking the component cell nearest its centroid; biggest components first."""
-        g = np.asarray(grid)
+        clicking the component cell nearest its centroid; biggest components first. `grid` may
+        be an array, a frame (`current_frame`) or omitted (the current board)."""
+        g = self._grid_arg(grid)
         bg = background(g)
         hud = self.border(g)
         rows, cols = g.shape
@@ -762,11 +776,15 @@ class WM:
 
     # ---- mechanical analysis (no model needed)
 
-    def induce_motion(self, record=None) -> dict:
+    def induce_motion(self, grid=None, record=None) -> dict:
         """Per directional action, find same-colour components that translated by a consistent
         (dy, dx) between settled before/after grids. Returns {'actions': {name: {dx, dy,
         moving_colors, n_support, n_contradictions, blocked_cases}}, 'avatar_candidates': [...]}.
-        blocked_cases = record indices where the action moved nothing."""
+        blocked_cases = record indices where the action moved nothing. `grid` (array, frame or
+        omitted = current board) is where avatar candidates are located; a Record is accepted
+        there too."""
+        if isinstance(grid, Record) and record is None:
+            grid, record = None, grid
         rec = self._rec(record)
         per = defaultdict(lambda: {"offsets": Counter(), "colors": defaultdict(Counter),
                                    "blocked": [], "by_case": []})
@@ -798,7 +816,7 @@ class WM:
             result[name] = {"dx": int(dx), "dy": int(dy), "moving_colors": colors,
                             "n_support": support, "n_contradictions": len(p["by_case"]) - support,
                             "blocked_cases": p["blocked"]}
-        cur = np.asarray(rec.current_grid)
+        cur = self._grid_arg(grid) if grid is not None else np.asarray(rec.current_grid)
         avatars = []
         for c, acts in sorted(color_actions.items(), key=lambda x: -len(x[1])):
             comps = [k for k in components(cur, {c})]
@@ -834,21 +852,24 @@ class WM:
         this level ('ever'). MOUSE counts as one action name here."""
         rec = self._rec(record)
         names = [str(a).upper() for a in (available or self._available(rec))]
-        cur = grid_hash(rec.current_grid)
+        # view_hash, not grid_hash: with a per-action HUD bar no two full grids ever match, so
+        # 'here' would always list every action (run #5, ka59 and dc22).
+        cur = self.view_hash(rec.current_grid)
         here, ever = set(), set()
         for before, action, _, _ in rec.transitions:
             n = norm_action(action)["action"]
             ever.add(n)
-            if grid_hash(before) == cur:
+            if self.view_hash(before) == cur:
                 here.add(n)
         return {"here": [n for n in names if n not in here],
                 "ever": [n for n in names if n not in ever]}
 
     def goal_menu(self, record=None, max_items: int = 20) -> list:
-        """Candidate goal predicates (name, fn(state)->bool) built from the record, for
-        wm.plan(goal=fn): avatar_reaches_color_c (avatar colour now covers a cell that was colour c),
+        """Candidate goal predicates (name, fn) built from the record, for wm.plan(goal=fn):
+        avatar_reaches_color_c (avatar colour now covers a cell that was colour c),
         all_color_c_removed, grid_matches_region (object region B equals object region A's
-        current content)."""
+        current content). Each fn accepts a model state dict, a grid, a frame or no argument
+        (the current board) and returns bool."""
         rec = self._rec(record)
         cur = np.asarray(rec.current_grid).copy()
         bg = background(cur)
@@ -866,7 +887,15 @@ class WM:
             if c not in avatar_colors:
                 menu.append((f"all_color_{c}_removed", _removed_pred(c)))
         menu += _region_preds(cur, bg)
-        return menu[:max_items]
+        return [(name, self._flex_pred(fn)) for name, fn in menu[:max_items]]
+
+    def _flex_pred(self, fn):
+        """Wrap a grid predicate so the model can call it on a state, a grid, a frame or nothing
+        (run #5: five calls were lost to predicates that only took state['grid'])."""
+        def pred(state=None):
+            return fn({"grid": self._grid_arg(state)})
+        pred.__doc__ = "pred(state_or_grid_or_frame=None) -> bool; no argument = current board"
+        return pred
 
 
 # ---------------------------------------------------------------- light-path helpers
