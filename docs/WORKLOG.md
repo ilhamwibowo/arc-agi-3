@@ -65,3 +65,4 @@
   win, sb26 8/8 win, dc22 4/6, ls20 3/7. ⇒ default send_images=False. Option for later: one image at each
   level start only (one cache miss per level).
 - Run #5 (full25, images on, pre-fix sandbox) still running; it carries the same OOM risk.
+- 15:50 Run #6 pushed: `wibowoilham/arc3-full25b` v1 — all 25 games, 3 h cap, text-only default + sandbox kill fix (commit fb7ea9b). Queues behind run #5.
