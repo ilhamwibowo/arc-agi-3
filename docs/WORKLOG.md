@@ -102,3 +102,5 @@
   decode slot the whole time. No harness guard caught a turn with zero effective actions. Fix next: idle-turn
   detection → release slot + "idling earns nothing" notice, sleep the game after repeated idle turns; sandbox
   refuses a second consecutive no-op RESET.
+- 20:50 Idle guard committed: after 3 consecutive turns with no executed action the opener carries an "idling earns
+  nothing" notice and the decode slot is released; after 6 the game parks 10 min (then counter back to 3). 147 tests.
