@@ -1,8 +1,8 @@
 """Shared contracts for arc3. Every module codes against these; keep them small and stable.
 
 Grid convention: numpy uint8 array shape (rows, cols), values 0-15, (0,0) top-left.
-Action names seen by the model: UP DOWN LEFT RIGHT SPACE MOUSE(row,col) UNDO. RESET is harness-only
-(auto after GAME_OVER) unless a config exposes it. Engine mapping: ACTION1..4 = UP/DOWN/LEFT/RIGHT,
+Action names seen by the model: UP DOWN LEFT RIGHT SPACE MOUSE(row,col) UNDO RESET. RESET is also
+issued by the harness after GAME_OVER; the model sees it when GameConfig.expose_reset (default). Engine mapping: ACTION1..4 = UP/DOWN/LEFT/RIGHT,
 ACTION5 = SPACE, ACTION6 = MOUSE, ACTION7 = UNDO (verify against arc_agi GameAction at runtime).
 """
 from __future__ import annotations
@@ -88,6 +88,9 @@ class ActionResult:
     frames: list[np.ndarray] = field(default_factory=list)
     level_reset: bool = False             # board silently went back to the level start (life lost)
     diff: str = ""                        # one-line object diff before->after (set by the sandbox)
+    budget_left: Optional[int] = None     # ~actions left before an edge budget bar runs out
+    budget_bar: Optional[str] = None      # which bar, e.g. "top band, color 9, shrinks 1/action"
+    skipped: int = 0                      # requested actions of the batch not run after this one
 
 
 @dataclass
@@ -106,7 +109,9 @@ class GameConfig:
     max_seconds: float = 30 * 60
     hud_border: int = 4                   # cells; changes only within this border are HUD-only
     guards_from_level: int = 2
-    expose_reset: bool = False
+    # RESET restarts only the current level (env sets ONLY_RESET_LEVELS and refuses a level-wiping
+    # RESET); exposing it saves the dozens of moves models otherwise burn to force a restart.
+    expose_reset: bool = True
     expose_undo: bool = True
     image_scale: int = 10
     seed: int = 0

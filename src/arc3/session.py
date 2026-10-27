@@ -32,6 +32,11 @@ class GameSession:
         self._trace_file = open(trace_path, "a") if trace_path else None
         # First board of the current level; used to spot silent resets (see _is_level_reset).
         self.level_start: np.ndarray = self.current.grid
+        # Non-RESET actions since the level started or was last RESET; a RESET with none is a no-op
+        # at best and, at a fresh level, a full game reset in some engine builds.
+        self.since_restart = 0
+        self.budget = percept.BudgetTracker(border=config.hud_border)
+        self.budget.reset(self.current.grid)
         self.trace({"event": "start", "step": self.current.step,
                     "levels": self.current.levels_completed, "win_levels": self.current.win_levels,
                     "grid": percept.state_hash(self.current.grid)})
@@ -48,6 +53,8 @@ class GameSession:
         names = list(self.current.available_actions)
         if not self.config.expose_reset:
             names = [n for n in names if n != "RESET"]
+        elif "RESET" not in names and self.current.state != GameState.WIN:
+            names.append("RESET")   # the engine never lists RESET; it is always accepted
         if not self.config.expose_undo:
             names = [n for n in names if n != "UNDO"]
         return names
@@ -66,6 +73,10 @@ class GameSession:
             return self._refused(action, "game_over", "attempt is over; waiting for automatic reset")
         if self.config.max_actions is not None and self.actions >= self.config.max_actions:
             return self._refused(action, "action_budget", "action budget exhausted")
+        if (action.name == "RESET" and not automatic and self.since_restart == 0
+                and before.state != GameState.GAME_OVER):
+            return self._refused(action, "reset_noop", "the level is already at its start board; "
+                                 "RESET would change nothing")
 
         after = self.env.step(action)
         board_changed, gameplay_changed = percept.changed_masks(
@@ -84,11 +95,16 @@ class GameSession:
             animated=len(chain) > 2, transient_pixels=int(transient), automatic=automatic,
             before=before.grid, after=after.grid, frames=list(after.frames),
             level_reset=level_reset)
+        self._track_budget(res, after)
         res.message = self._describe(res)
         self.history.append(Transition(len(self.history), action, before, after, res))
         self.previous, self.current = before, after
         if level_completed:
             self.level_start = after.grid
+        if level_completed or action.name == "RESET":
+            self.since_restart = 0
+        else:
+            self.since_restart += 1
         if automatic:
             self.resets += 1
         else:
@@ -109,6 +125,16 @@ class GameSession:
         return self.step(Action("RESET"), automatic=True)
 
     # ---- helpers -------------------------------------------------------------------------------
+
+    def _track_budget(self, res: ActionResult, after: Observation) -> None:
+        """Feed the budget-bar detector; it restarts wherever the bar may legitimately refill."""
+        if (res.level_completed or res.level_reset or res.game_over
+                or res.action.name in ("RESET", "UNDO")):
+            self.budget.reset(after.grid)   # UNDO may give the spent cells back
+            return
+        est = self.budget.update(after.grid)
+        if est is not None:
+            res.budget_left, res.budget_bar = est
 
     def _is_level_reset(self, before: np.ndarray, after: np.ndarray, transient: int) -> bool:
         """True when `after` is the level's start board again although `before` was not.
@@ -150,8 +176,10 @@ class GameSession:
         if r.level_completed:
             return "level completed"
         if r.level_reset:
-            return ("LEVEL RESET: the board went back to the level's start position (a life was "
-                    "probably lost: the previous move was fatal or the move budget ran out)")
+            return ("LEVEL RESET: the board returned to this level's start position (a fatal move, "
+                    "an exhausted move budget, or a deliberate restart mechanic)")
+        if r.action.name == "RESET":
+            return "RESET: the level restarted from its start board; completed levels are kept"
         if not r.board_changed:
             return "nothing changed"
         if not r.gameplay_changed:

@@ -144,8 +144,9 @@ def test_trim_hysteresis_keeps_system_and_last_block():
         _block(ctx, 1000)                                   # ~3000 tokens per block
     total = ctx.total_tokens()
     assert ctx.trim(budget_tokens=total + 1, drain_tokens=10_000) == 0
-    dropped = ctx.trim(budget_tokens=20_000, drain_tokens=10_000)
-    assert dropped % 3 == 0 and dropped > 0
+    assert ctx.trim(budget_tokens=20_000, drain_tokens=10_000) > 0
+    dropped = ctx.last_trim["dropped"]       # the return value also counts stripped reasoning
+    assert dropped % 3 == 0 and dropped > 0 and ctx.trimmed_since_last_user
     assert ctx.total_tokens() <= 10_000
     assert ctx.messages[0].role == "system" and ctx.messages[0].content.startswith("SYSTEM")
     assert ctx.messages[1].role == "user"

@@ -21,7 +21,7 @@ def test_session_step_and_tool(tmp_path):
     env = Env.offline(gid, ENVS, seed=0, recordings_dir=tmp_path / "toolkit")
     s = GameSession(env, GameConfig(game_id=gid), trace_path=tmp_path / "trace.jsonl")
     assert s.level == 1 and s.current.win_levels > 0
-    assert "RESET" not in s.valid_actions
+    assert "RESET" in s.valid_actions          # exposed by default; the engine never lists it
     r = s.step(Action("UP"))
     assert r.executed and s.actions == 1 and len(s.history) == 1
     tool = PythonTool(s)

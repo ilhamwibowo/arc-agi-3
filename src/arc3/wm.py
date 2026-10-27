@@ -6,6 +6,8 @@ transitions of the current level as a `Record`. On top of that this module offer
 
 - `verify()`  three channels (init render, dynamics, outcome) with a compact first-divergence diff,
 - `plan()`    BFS / A* over the model from the replayed current state,
+- `check()` / `plan_abstract()`  the light path: the model's own read(grid)->state and
+  step(state, action)->state, checked against history and searched, no grid rendering,
 - `validate()` / `expected_hashes()` for hash-anchored plan execution by the harness,
 - mechanical helpers that need no model: `induce_motion`, `transition_graph`, `untried_actions`,
   `goal_menu`.
@@ -43,6 +45,9 @@ class Record:
     available_actions: list = field(default_factory=list)
     previous: list = field(default_factory=list)   # Records of earlier levels, oldest first
     live_grid: Optional[np.ndarray] = None         # observed board now, if not the last `after`
+    # Transition indices preceded by a RESET (len(transitions) = a RESET after the last one). The
+    # model's state restarts from init(before) there, whatever the boards look like.
+    restarts: list = field(default_factory=list)
 
     @property
     def current_grid(self) -> np.ndarray:
@@ -317,11 +322,13 @@ class WM:
             init_ch["failures"].append({"level": lv.level, "error": _err(e)})
             return
         prev_after = lv.level_start_grid
+        restarts = set(lv.restarts)
         for i, (before, action, after, rec_out) in enumerate(lv.transitions):
             self._check(deadline)
             action = norm_action(action)
             before, after = np.asarray(before), np.asarray(after)
-            if before.shape != prev_after.shape or not np.array_equal(before, prev_after):
+            if i in restarts or before.shape != prev_after.shape or \
+                    not np.array_equal(before, prev_after):
                 # Discontinuity (reset after game over, unmodelled jump): restart from what we saw.
                 try:
                     state = self._init(before, lv.level)
@@ -381,16 +388,23 @@ class WM:
         try:
             state = self._init(rec.level_start_grid, rec.level)
             prev_after = np.asarray(rec.level_start_grid)
-            for before, action, after, _ in rec.transitions:
+            restarts = set(rec.restarts)
+            # Only the segment after the last RESET shapes the current state.
+            first = max([i for i in restarts if i < len(rec.transitions)], default=0)
+            for i, (before, action, after, _) in enumerate(rec.transitions):
+                if i < first:
+                    continue
                 if _deadline is not None:
                     self._check(_deadline)
                 before = np.asarray(before)
-                if before.shape != prev_after.shape or not np.array_equal(before, prev_after):
+                if i in restarts or before.shape != prev_after.shape or \
+                        not np.array_equal(before, prev_after):
                     state = self._init(before, rec.level)
                 state["grid"] = before.copy()
                 state = self._step(state, norm_action(action))
                 prev_after = np.asarray(after)
-            if cur.shape != prev_after.shape or not np.array_equal(cur, prev_after):
+            if len(rec.transitions) in restarts or cur.shape != prev_after.shape or \
+                    not np.array_equal(cur, prev_after):
                 state = self._init(cur, rec.level)   # board jumped (e.g. reset after game over)
             state["grid"] = cur.copy()
             return state
@@ -437,6 +451,139 @@ class WM:
         if "MOUSE" in names:
             acts += self.click_candidates(state["grid"])
         return acts
+
+    # ---- light path: the model's own abstraction, no grid rendering
+
+    @property
+    def level_start(self) -> np.ndarray:
+        """Copy of this level's first board. Build static maps (walls, targets, pickups) from it:
+        the current board may already lack an item that the recorded moves picked up."""
+        return np.array(self._rec().level_start_grid, copy=True)
+
+    def check(self, read, step, all_levels: bool = False, max_mismatches: int = 3,
+              timeout: float = VERIFY_SECONDS) -> dict:
+        """Grade your abstraction against this level's recorded moves (all_levels=True adds earlier
+        levels). For every recorded (before, action, after): predicted = step(read(before), action),
+        actual = read(after). Moves that ended the level, the game or a life are skipped (their
+        `after` is not a normal board). `action` is 'UP'..'SPACE' or ('MOUSE', row, col). Costs no
+        game actions. Returns {ok, accuracy, checked, correct, skipped, by_action {name: 'c/n'},
+        first_mismatch {level, index, action, before, predicted, actual} or None,
+        mismatches (up to max_mismatches), unseen_actions, summary}."""
+        rec = self._rec()
+        levels = (list(rec.previous) if all_levels else []) + [rec]
+        deadline = time.monotonic() + timeout
+        out = {"ok": False, "accuracy": 1.0, "checked": 0, "correct": 0, "skipped": 0,
+               "by_action": {}, "first_mismatch": None, "mismatches": [], "timeout": False}
+        tally: dict = defaultdict(lambda: [0, 0])
+        try:
+            for lv in levels:
+                for i, (before, action, after, outcome) in enumerate(lv.transitions):
+                    self._check(deadline)
+                    if outcome != "ongoing":
+                        out["skipped"] += 1
+                        continue
+                    a = abstract_action(action)
+                    name = a if isinstance(a, str) else a[0]
+                    out["checked"] += 1
+                    tally[name][1] += 1
+                    where = {"level": lv.level, "index": i, "action": action_str(action)}
+                    try:
+                        predicted = step(read(np.array(before, copy=True)), a)
+                        actual = read(np.array(after, copy=True))
+                        same = same_state(predicted, actual)
+                    except Exception as e:  # noqa: BLE001 - model code may raise anything
+                        bad = {**where, "error": _err(e)}
+                    else:
+                        if same:
+                            out["correct"] += 1
+                            tally[name][0] += 1
+                            continue
+                        try:
+                            start = _short(read(np.array(before, copy=True)))
+                        except Exception as e:  # noqa: BLE001
+                            start = _err(e)
+                        bad = {**where, "before": start, "predicted": _short(predicted),
+                               "actual": _short(actual)}
+                    if len(out["mismatches"]) < max_mismatches:
+                        out["mismatches"].append(bad)
+        except _Timeout:
+            out["timeout"] = True
+        out["first_mismatch"] = out["mismatches"][0] if out["mismatches"] else None
+        out["by_action"] = {k: f"{c}/{n}" for k, (c, n) in sorted(tally.items())}
+        if out["checked"]:
+            out["accuracy"] = round(out["correct"] / out["checked"], 4)
+        out["ok"] = not out["timeout"] and out["correct"] == out["checked"]
+        seen = {norm_action(t[1])["action"] for lv in levels for t in lv.transitions}
+        out["unseen_actions"] = [n for n in self._available(rec)
+                                 if n not in seen and n not in ("RESET", "UNDO")]
+        out["summary"] = _check_summary(out)
+        return out
+
+    def plan_abstract(self, read, step, goal, actions=None, max_nodes: int = 20000,
+                      timeout: float = PLAN_SECONDS) -> dict:
+        """BFS over your abstraction from read(current board) to a state with goal(state) True.
+        actions: the moves to try (default: the valid keyboard actions; with MOUSE available, also
+        one click per object on the current board as ('MOUSE', row, col)). step must not modify
+        the state it is given in place (return a new one). States must be hashable or plain data
+        (tuples, dicts, lists, sets, numpy arrays). Costs no game actions. Returns {found, actions
+        (pass to action(...)), plan (strings), nodes, reason}. Run check(read, step) first."""
+        rec = self._rec()
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        out = {"found": False, "actions": [], "plan": [], "nodes": 0, "reason": "",
+               "seconds": 0.0}
+
+        def done(reason, path=None):
+            out["reason"] = reason
+            out["seconds"] = round(time.monotonic() - t0, 3)
+            if path is not None:
+                out.update(found=True, actions=path,
+                           plan=[a if isinstance(a, str) else action_str(a) for a in path])
+            return out
+
+        if actions is None:
+            names = self._available(rec)
+            actions = [n for n in names if n not in ("MOUSE", "UNDO", "RESET")]
+            if "MOUSE" in names:
+                actions += [("MOUSE", c["row"], c["col"])
+                            for c in self.click_candidates(rec.current_grid)]
+        actions = [abstract_action(a) for a in actions]
+        try:
+            start = read(np.array(rec.current_grid, copy=True))
+            if goal(start):
+                return done("already at goal", [])
+        except Exception as e:  # noqa: BLE001
+            return done("read/goal failed on the current board: " + _err(e))
+        parents = {state_key(start): None}
+        frontier = deque([start])
+        n_errors = 0
+        try:
+            while frontier:
+                state = frontier.popleft()
+                skey = state_key(state)
+                for a in actions:
+                    self._check(deadline)
+                    try:
+                        nxt = step(copy.deepcopy(state), a)
+                        key = state_key(nxt)
+                        if key in parents:
+                            continue
+                        parents[key] = (skey, a)
+                        out["nodes"] += 1
+                        if goal(nxt):
+                            return done("found", self._path(parents, key))
+                    except Exception:  # noqa: BLE001
+                        n_errors += 1
+                        continue
+                    if out["nodes"] >= max_nodes:
+                        return done(f"node cap {max_nodes} reached")
+                    frontier.append(nxt)
+        except _Timeout:
+            return done(f"timeout after {timeout}s")
+        reason = "exhausted: goal unreachable in your step()"
+        if n_errors:
+            reason += f" ({n_errors} step/goal errors)"
+        return done(reason)
 
     def plan(self, max_nodes: int = 20000, max_depth: int = 200, goal=None, mode: str = "auto",
              timeout: float = PLAN_SECONDS) -> dict:
@@ -720,6 +867,64 @@ class WM:
                 menu.append((f"all_color_{c}_removed", _removed_pred(c)))
         menu += _region_preds(cur, bg)
         return menu[:max_items]
+
+
+# ---------------------------------------------------------------- light-path helpers
+
+def abstract_action(a):
+    """The action form check/plan_abstract hand to step(): 'UP' or ('MOUSE', row, col)."""
+    n = norm_action(a)
+    return ("MOUSE", n["row"], n["col"]) if n["action"] == "MOUSE" else n["action"]
+
+
+def same_state(a, b) -> bool:
+    """Equality for model states that may hold numpy arrays (where == is elementwise)."""
+    try:
+        eq = a == b
+        if isinstance(eq, bool):
+            return eq
+        if isinstance(eq, np.ndarray):
+            return np.shape(a) == np.shape(b) and bool(eq.all())
+        return bool(eq)
+    except Exception:  # noqa: BLE001 - ambiguous truth value of containers holding arrays
+        return state_key(a) == state_key(b)
+
+
+def state_key(state):
+    """Hashable key for a model state: the state itself when hashable, else a canonical form."""
+    try:
+        hash(state)
+        if not isinstance(state, np.ndarray):
+            return state
+    except TypeError:
+        pass
+    return _key_part(state)
+
+
+def _short(x, limit: int = 160) -> str:
+    try:
+        r = repr(x)
+    except Exception as e:  # noqa: BLE001
+        r = f"<unprintable {type(x).__name__}: {e}>"
+    return r if len(r) <= limit else r[:limit - 3] + "..."
+
+
+def _check_summary(out: dict) -> str:
+    if out["timeout"]:
+        head = "timeout; partial: "
+    else:
+        head = ""
+    text = (f"{head}{out['correct']}/{out['checked']} predicted"
+            + (f" ({out['skipped']} terminal moves skipped)" if out["skipped"] else "")
+            + (f"; by action {out['by_action']}" if out["by_action"] else ""))
+    fm = out["first_mismatch"]
+    if fm:
+        detail = (f"error {fm['error']}" if "error" in fm else
+                  f"from {fm['before']} predicted {fm['predicted']}, actual {fm['actual']}")
+        text += f"; first mismatch L{fm['level']} #{fm['index']} {fm['action']}: {detail}"
+    if out.get("unseen_actions"):
+        text += f"; never tried here: {', '.join(out['unseen_actions'])}"
+    return text
 
 
 # ---------------------------------------------------------------- mechanical helpers

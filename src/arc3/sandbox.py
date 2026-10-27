@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+import collections
+import itertools
+import math
 import random
 import symtable
 import threading
@@ -46,7 +49,10 @@ BLOCKED_BUILTINS = frozenset({
 SAFE_BUILTIN_NAMES = frozenset(k for k in vars(builtins) if k not in BLOCKED_BUILTINS)
 PROVIDED = ("current_frame", "previous_frame", "history", "transitions", "last_transition",
             "valid_actions", "last_action_call_result", "last_animation_frames", "frame_diff",
-            "action", "result", "wm", "np", "memory")
+            "action", "result", "wm", "np", "memory", "collections", "itertools", "math",
+            "source")
+# Modules bound in every namespace, like np: models forget the import, and imports do not persist.
+PRELOADED = {"collections": collections, "itertools": itertools, "math": math}
 
 
 class AttrDict(dict):
@@ -122,15 +128,23 @@ class TransitionView:
         # Aliases the prompt mentions / models reach for.
         self.before_frame, self.after_frame, self.frame = self.before, self.after, self.after
         self.level = self.before.level
+        self.step = self.after.step   # engine step counter after this action
         r = t.result
+        self._r = r
         self.board_changed, self.gameplay_changed = r.board_changed, r.gameplay_changed
         self.level_completed, self.game_over = r.level_completed, r.game_over
+        self.level_reset = r.level_reset
         self.message = r.message
         self.result = AttrDict(action=self.action, executed=r.executed,
                                board_changed=r.board_changed, gameplay_changed=r.gameplay_changed,
                                level_completed=r.level_completed, game_over=r.game_over,
                                run_complete=r.run_complete, animated=r.animated,
-                               message=r.message)
+                               level_reset=r.level_reset, message=r.message)
+
+    @property
+    def stop_reason(self):
+        """Read live: the sandbox sets it on the result after the view may have been built."""
+        return self._r.stop_reason
 
     def __getitem__(self, key):
         """Dict-style access (`history[-1]['action']`) for models that treat entries as dicts."""
@@ -139,8 +153,9 @@ class TransitionView:
         raise KeyError(key)
 
     def keys(self):
-        return ["index", "action", "level", "frame", "before_frame", "after_frame", "result",
-                "gameplay_changed", "level_completed", "game_over", "message"]
+        return ["index", "action", "level", "step", "frame", "before_frame", "after_frame",
+                "result", "gameplay_changed", "level_completed", "game_over", "level_reset",
+                "stop_reason", "message"]
 
     def __repr__(self) -> str:
         return f"<Transition #{self.index} {self.action} changed={self.gameplay_changed}>"
@@ -170,6 +185,14 @@ def parse_action(spec) -> Action:
         name = str(spec.get("action", "")).upper()
         if name == "MOUSE":
             return Action("MOUSE", int(spec["row"]), int(spec["col"]))
+        return Action(name)
+    if isinstance(spec, (tuple, list)) and spec and isinstance(spec[0], str):
+        # ('MOUSE', r, c) is the click form wm.plan_abstract hands to and returns from step().
+        name = spec[0].strip().upper()
+        if name == "MOUSE":
+            if len(spec) != 3:
+                raise ValueError("MOUSE tuple must be ('MOUSE', row, col)")
+            return Action("MOUSE", int(spec[1]), int(spec[2]))
         return Action(name)
     raise ValueError(f"cannot parse action {spec!r}")
 
@@ -250,6 +273,20 @@ class PythonTool:
         self._calls = 0
         self.wm = WM(record=self._wm_record, hud_border=session.config.hud_border)
 
+    def memory_summary(self, limit: int = 400) -> str:
+        """`key=short repr` of every memory entry, capped at `limit` chars (for the trim notice)."""
+        if not self.memory:
+            return "(empty)"
+        parts = []
+        for k, v in self.memory.items():
+            try:
+                r = repr(v)
+            except Exception:  # model objects may have a broken __repr__
+                r = f"<{type(v).__name__}>"
+            parts.append(f"{k!r}: {r[:60] + '...' if len(r) > 60 else r}")
+        text = "; ".join(parts)
+        return text if len(text) <= limit else text[:limit - 3] + "..."
+
     # ---- globals -------------------------------------------------------------------------------
 
     def _builtins(self, run: _Run) -> dict:
@@ -294,8 +331,20 @@ class PythonTool:
             grid = lambda f: f.grid if isinstance(f, FrameView) else np.asarray(f)
             return _percept().frame_diff(grid(before), grid(after))
 
+        def source(name):
+            """Print a retained function's source (inspect is not importable)."""
+            name = getattr(name, "__name__", name)
+            entry = self.retained.get(name)
+            if entry is None:
+                run.out.append(f"no retained function {name!r}; retained: "
+                               f"{', '.join(sorted(self.retained)) or 'none'}\n")
+                return
+            run.out.append("\n".join(entry["imports"] + [entry["source"]]) + "\n")
+
         ns["frame_diff"] = frame_diff
+        ns["source"] = source
         ns["np"] = np   # models assume numpy is already imported
+        ns.update(PRELOADED)
         ns["action"] = lambda actions: self._action(run, ns, actions)
         # One WM per game (keeps the registered model across calls), rebound to this snippet.
         self.wm.executor = ns["action"]
@@ -307,14 +356,24 @@ class PythonTool:
         return ns
 
     def _wm_record(self) -> Record:
-        """Settled transitions per level from the session history (automatic RESETs dropped)."""
+        """Settled transitions per level from the session history.
+
+        RESET transitions (automatic after a game over, or the model's own) are not transitions of
+        the game's dynamics; each one is recorded as a restart boundary instead, so verify, check
+        and current_state re-initialise from the post-RESET board even if it happens to equal the
+        board before it.
+        """
         s = self.session
         by_level: dict[int, Record] = {}
         for t in s.history:
-            if t.action.name == "RESET" or not t.result.executed:
+            if not t.result.executed:
                 continue
             lv = t.before.levels_completed + 1
             rec = by_level.get(lv)
+            if t.action.name == "RESET":
+                if rec is not None:
+                    rec.restarts.append(len(rec.transitions))
+                continue
             if rec is None:
                 rec = by_level[lv] = Record(level_start_grid=t.before.grid, level=lv)
             r = t.result
@@ -360,6 +419,7 @@ class PythonTool:
                             "level_completed": False, "game_over": False, "run_complete": False,
                             "level_reset": False, "animation": None, "per_action": [],
                             "frame": ns["current_frame"]})
+        last: Optional[ActionResult] = None   # last result of THIS batch (run.results spans calls)
         for a in parsed:
             if run.budget <= 0:
                 summary["stop_reason"] = "max_actions_per_call"
@@ -372,6 +432,7 @@ class PythonTool:
                 run.results.append(res)  # under the lock so a timed-out call still reports it
             run.budget -= 1
             summary["skipped"] -= 1
+            last = res
             if res.executed:
                 try:
                     res.diff = diff_line(res.before, res.after)
@@ -382,7 +443,7 @@ class PythonTool:
                 "gameplay_changed": res.gameplay_changed, "board_changed": res.board_changed,
                 "level_completed": res.level_completed, "game_over": res.game_over,
                 "level_reset": res.level_reset, "stop_reason": res.stop_reason,
-                "message": res.message, "diff": res.diff})
+                "message": res.message, "diff": res.diff, "budget_left": res.budget_left})
             if not res.executed:
                 summary["stop_reason"] = res.stop_reason or "refused"
                 break
@@ -395,17 +456,27 @@ class PythonTool:
                 summary["animation"] = anim
                 cur = ns["current_frame"]
                 self.last_animation_frames = [FrameView(g, cur.step, cur.level) for g in chain]
-            if res.level_completed or res.game_over or res.run_complete or res.level_reset:
+            restarted = a.name == "RESET"   # a new start board: the model must look at it
+            if (res.level_completed or res.game_over or res.run_complete or res.level_reset
+                    or restarted):
                 run.terminal = True
                 summary["stop_reason"] = "game_over" if res.game_over else (
                     "level_completed" if res.level_completed else
-                    "level_reset" if res.level_reset else "run_complete")
+                    "level_reset" if res.level_reset else
+                    "run_complete" if res.run_complete else "reset")
                 break
             if not res.gameplay_changed:
                 run.ineffective = True
                 if guards:
                     summary["stop_reason"] = "no_op"
                     break
+        if summary["stop_reason"] and last is not None:
+            # Mutated in place on purpose: the same object is history[i].result, so the opener,
+            # the [actions] line, the trace `stops` field and history[i].stop_reason all agree.
+            if not last.stop_reason:
+                last.stop_reason = summary["stop_reason"]
+            last.skipped = summary["skipped"]
+            summary["per_action"][-1]["stop_reason"] = last.stop_reason
         summary["frame"] = ns["current_frame"]   # board after the batch settled
         self.last_action_call_result = summary
         ns["last_action_call_result"] = summary

@@ -147,7 +147,7 @@ def test_level_complete_stops_batch():
 
 
 def test_reset_refused_and_action_cap():
-    tool = PythonTool(FakeSession(guards_from_level=9), max_actions_per_call=3)
+    tool = PythonTool(FakeSession(guards_from_level=9, expose_reset=False), max_actions_per_call=3)
     tool.session.valid_actions.append("RESET")
     assert "RESET is not available" in tool.run("action(['RESET'])").error
     r = tool.run("print(action(['UP'] * 5)['stop_reason'])")

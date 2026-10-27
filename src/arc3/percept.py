@@ -537,3 +537,103 @@ def animation_timeline(frames: list[np.ndarray], max_cells_per_step: int = 24,
         lines.append(f"frame {i}: {n} cells changed {detail}".rstrip())
     return {"frames": len(frames), "transient_pixels": count, "transient_bbox": bbox,
             "steps": steps, "text": "\n".join(lines)}
+
+
+# ---------------------------------------------------------------- move-budget bar
+
+BANDS = ("top", "bottom", "left", "right")
+
+
+def _longest_runs(line: np.ndarray, out: dict, band: str) -> None:
+    """Update out[(band, color)] with the longest straight run of each color in `line`."""
+    if line.size == 0:
+        return
+    edges = np.flatnonzero(line[1:] != line[:-1]) + 1
+    starts = np.concatenate(([0], edges))
+    ends = np.concatenate((edges, [line.size]))
+    for s, e in zip(starts.tolist(), ends.tolist()):
+        key = (band, int(line[s]))
+        if e - s > out.get(key, 0):
+            out[key] = e - s
+
+
+def band_runs(grid: np.ndarray, border: int = 4) -> dict:
+    """{(band, color): longest run} over the 4 HUD border bands.
+
+    Rows of the top/bottom band and columns of the left/right band are scanned along their
+    length, so a horizontal bar in the top band or a vertical bar in a side band is one run.
+    """
+    g = np.asarray(grid)
+    out: dict = {}
+    if border <= 0 or g.ndim != 2:
+        return out
+    b = min(border, g.shape[0] // 2, g.shape[1] // 2)
+    for r in range(b):
+        _longest_runs(g[r], out, "top")
+        _longest_runs(g[g.shape[0] - 1 - r], out, "bottom")
+    for c in range(b):
+        _longest_runs(g[:, c], out, "left")
+        _longest_runs(g[:, g.shape[1] - 1 - c], out, "right")
+    return out
+
+
+class BudgetTracker:
+    """Game-agnostic move-budget readout from a shrinking HUD bar.
+
+    Many games draw the move budget as a bar of one color in the edge band that loses a fixed
+    number of cells k per action, or per few actions (wa30, g50t lose one cell every 2-4 actions).
+    After every scored action we record the longest run of each color in each band. A (band,
+    color) qualifies when, since the last reset, its run never grew, every change was the same
+    shrink k >= 1, and it shrank at least `min_shrinks` times. Then about
+    (run / k) * (actions per shrink) actions are left. Anything else (no bar, a bar that grows,
+    irregular changes) reports nothing: a missing readout is safe, a wrong one is not.
+    """
+
+    def __init__(self, border: int = 4, min_shrinks: int = 3):
+        self.border = border
+        self.min_shrinks = min_shrinks
+        self.snapshots: list[dict] = []
+
+    def reset(self, grid: np.ndarray) -> None:
+        """Start over from `grid` (game start, new level, RESET, refill)."""
+        self.snapshots = [band_runs(grid, self.border)]
+
+    def update(self, grid: np.ndarray) -> Optional[tuple[int, str]]:
+        """Record the board after one action; return (actions_left, description) or None."""
+        if not self.snapshots:
+            self.reset(grid)
+            return None
+        self.snapshots.append(band_runs(grid, self.border))
+        return self.estimate()
+
+    def estimate(self) -> Optional[tuple[int, str]]:
+        n_actions = len(self.snapshots) - 1
+        if n_actions < self.min_shrinks:
+            return None
+        best = None
+        for key in set(self.snapshots[0]) | set(self.snapshots[-1]):
+            fit = self._fit(key)
+            if fit is None:
+                continue
+            k, shrinks = fit
+            run = self.snapshots[-1].get(key, 0)
+            if best is None or (shrinks, run) > (best[0], best[1]):
+                best = (shrinks, run, k, key)
+        if best is None:
+            return None
+        shrinks, run, k, (band, color) = best
+        per = n_actions / shrinks          # actions per shrink step, averaged since the reset
+        left = int(run / k * per)
+        rate = f"{k}/action" if per < 1.25 else f"{k} per ~{per:.1f} actions"
+        return left, f"{band} band, color {color}, shrinks {rate}"
+
+    def _fit(self, key) -> Optional[tuple[int, int]]:
+        """(k, number of shrinks) if `key`'s history fits a bar losing k cells at a time."""
+        series = [s.get(key, 0) for s in self.snapshots]
+        deltas = [b - a for a, b in zip(series, series[1:])]
+        if any(d > 0 for d in deltas):
+            return None
+        drops = [-d for d in deltas if d < 0]
+        if len(drops) < self.min_shrinks or len(set(drops)) != 1:
+            return None
+        return drops[0], len(drops)

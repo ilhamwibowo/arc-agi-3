@@ -35,7 +35,7 @@ RUNTIME = """\
   - print(current_frame.segmentation) gives a compact object table
 - `previous_frame`: the board before the most recent action (or None).
 - `history`: list of entries with `.action`, `.frame` (board AFTER that action) and `.result`. `history[-1].frame` is `current_frame`.
-- `transitions` / `last_transition`: per-action records with `.action`, `.before_frame`, `.after_frame`, `.result`.
+- `transitions` / `last_transition`: per-action records with `.action`, `.before_frame`, `.after_frame`, `.result`, `.step`, `.level_reset`, `.stop_reason`.
 - `valid_actions`: action names allowed right now.
 - `last_action_call_result`: the result of your latest `action(...)` call (executed actions, flags, stop reasons). It survives later inspection calls.
 - `last_animation_frames`: every intermediate frame of the last action that animated (index 0 first, last = settled board); empty if none. Reading them costs nothing.
@@ -50,8 +50,10 @@ ACTIONS = """\
 - Only actions in `valid_actions` are accepted."""
 
 UNDO = "\n- `UNDO`: reverts the previous action when available. Check what it restored. It cannot undo a game over."
-RESET = ("\n- `RESET`: restarts the current level (completed levels are kept). It costs one action and the "
-         "actions already spent still count. Use it only to escape a hopeless position.")
+RESET = ("\n- `RESET`: restarts the current level from its start board and keeps completed levels. "
+         "It costs one action. Use it when the position is lost or the move budget left cannot "
+         "cover your plan. NEVER burn moves to exhaust a budget or to die on purpose: that costs "
+         "dozens of actions; RESET costs one.")
 
 SIGNALS = """\
 ## Reading results
@@ -59,14 +61,14 @@ SIGNALS = """\
 - A bar along the edge that shrinks every action is usually a move budget. Do not mistake its segments for clickable objects.
 - One action may play a short animation. `transient_pixels` > 0 means some cells changed and changed back mid-animation; that evidence exists only in `last_animation_frames`, so inspect them then.
 - `game_over`: this attempt FAILED (hazard, or budget ran out). The harness resets the level automatically; completed levels are kept. It never means you won.
-- `level_reset`: the board jumped back to the level's start without a game over; a life was probably lost (fatal move or empty budget). Treat it like `game_over`.
+- `level_reset`: the board returned to the level's start without a game over: a fatal move, an exhausted move budget, or a deliberate restart mechanic. Check `history[-1]`.
 - `level_completed`: you advanced a level; the next board is already in `current_frame`. `run_complete`: the whole game is won.
 - After any of these flags, stop acting in the current call and re-examine the board next turn. Guards may also stop a batch early (for example after an action that changed nothing in the interior); the stop reason is reported."""
 
 TOOL = """\
 ## The python tool
 - One tool, `python(code)`. Each call has a {timeout}s limit and its printed output is cut to about {out_tokens} tokens, so print compact summaries: object lists, counts, coordinates, small crops. Never print a whole board.
-- Variables reset between calls, but top-level functions you define are kept and can be called later (no decorators/annotations; pass data as arguments). Importable modules: {modules}.
+- Variables reset between calls, but top-level functions you define are kept and can be called later (no decorators/annotations; pass data as arguments); `source('name')` prints one. `np`, `math`, `collections`, `itertools` are preloaded. Importable modules: {modules}.
 - `memory` is a dict that persists across calls; variables do not. Store plans, maps, rule notes there (`memory['plan'] = ...`). Mutate it; do not reassign it.
 - Call the tool as often as you like. When unsure, run code rather than reasoning longer: code answers in a second what thinking only guesses."""
 
@@ -82,41 +84,32 @@ STRATEGY = """\
 
 # Worked example shown in WORLD_MODEL. Kept separate so a test can execute it (tests/test_prompts.py).
 WM_EXAMPLE = """\
-def init(grid, level):        # extra keys start here
-    return {'grid': grid.copy(), 'goal': frozenset(map(tuple, np.argwhere(grid == 11).tolist()))}
-def transition(state, action):  # state is a copy: edit and return it
-    d = {'UP': (-1, 0), 'DOWN': (1, 0), 'LEFT': (0, -1), 'RIGHT': (0, 1)}.get(action['action'])
-    g = state['grid']
-    if d is None:
-        return state
-    old = np.argwhere(g == 9)                 # blue block
-    new = old + np.array(d) * 5               # step from wm.induce_motion()
-    if new.min() < 4 or new.max() >= 60 or (g[new[:, 0], new[:, 1]] == 5).any():
-        return state                          # wall or edge: blocked
-    g[old[:, 0], old[:, 1]] = 0               # floor
-    g[new[:, 0], new[:, 1]] = 9
-    return state
-def outcome(state):
-    hit = any(tuple(p) in state['goal'] for p in np.argwhere(state['grid'] == 9).tolist())
-    return 'level_complete' if hit else 'ongoing'
-wm.register(transition, outcome, init=init)
-print(wm.verify()['summary'])"""
+g = wm.level_start  # static maps from the first board
+memory.update(wall=g == 5, key=g == 11, door=g == 14)
+def read(g):  # block top-left, key taken?
+    r, c = np.argwhere(g == 9).min(axis=0)
+    return (int(r), int(c), not (g == 11).any())
+def step(s, a):  # move 5 unless a wall blocks; landing on the key takes it
+    dr, dc = {'UP': (-5, 0), 'DOWN': (5, 0), 'LEFT': (0, -5), 'RIGHT': (0, 5)}.get(a, (0, 0))
+    r, c = s[0] + dr, s[1] + dc
+    if memory['wall'][r:r + 5, c:c + 5].any(): return s
+    return (r, c, s[2] or bool(memory['key'][r:r + 5, c:c + 5].any()))
+print(wm.check(read, step)['summary'])
+p = wm.plan_abstract(read, step, lambda s: s[2] and memory['door'][s[0]:s[0] + 5, s[1]:s[1] + 5].any())"""
 
 WORLD_MODEL = """\
-## World model: the default way to finish a level
-Once you can predict what a move does, write a simulator and let `wm` (a global) search it. verify and plan are free; only execute acts. A verified model plus the planner beats hand play.
-- `transition(state, action)` returns the next state; `outcome(state)` returns 'ongoing', 'level_complete' or 'game_over'. Test `action['action'] == 'UP'` (MOUSE also has 'row', 'col'). `state['grid']` is the board; other keys (positions, counters, keys held) come from `init(grid, level)`, so always call `wm.register(transition, outcome, init=init)`.
-- State can be abstract: keep positions or heights in extra keys and render them into 'grid'. verify compares interior cells only (HUD edge ignored), sets 'grid' to the observed board before each step and keeps your extra keys.
-Example (block moves 5 cells unless a black wall blocks it; reaching yellow wins):
+## World model: check your rules, then search
+Write your rules as two functions; the global `wm` checks and searches them free.
+- `read(grid)` -> the facts that matter (positions, keys held) as a tuple/dict; `step(state, action)` -> next state; action is 'UP'... or ('MOUSE', row, col).
+- `wm.check(read, step)` replays this level's moves: `ok`, `summary`, `first_mismatch`, `unseen_actions`. Reach `ok` before executing over ~8 actions from them; after a death, add its cause to `step`.
+- `wm.plan_abstract(read, step, goal)`: BFS to goal(state); `found`, `actions`, `reason`.
+Example:
 """ + WM_EXAMPLE + """
-- `wm.verify()` replays this level's moves (`all_levels=True` adds earlier levels): `ok`, `summary`, `dynamics.accuracy`, `dynamics.first_divergence` (`level`, `index`, `action`, then `error` or `diff` 'expected->predicted @ row cols'). Fix it and verify again until `ok`.
-- `p = wm.plan()` (or `plan(goal=fn)`): `found`, `actions`, `plan`, `nodes`, `reason`. No plan: `found` False, `actions` empty, `reason` says why.
-- `wm.execute(p['actions'])` plays it for real: `executed`, `mismatch_index` (None if all matched), `expected_diff`, `observed_outcome`, `stop_reason`. A mismatch means fix the model there.
-- Free: `wm.induce_motion()` per-direction offsets, moving colors, blocked cases; `wm.untried_actions()` actions never tried here / this level; `wm.transition_graph()` observed states, no-ops, deaths, revisits.
-- No per-level branches in `transition`."""
+- Full simulator option: `wm.register(transition, outcome, init=init)` (transition over `state['grid']`; outcome 'ongoing'/'level_complete'/'game_over'), then `wm.verify()`, `p = wm.plan()`, `wm.execute(p['actions'])`.
+- Free: `wm.induce_motion()`, `wm.untried_actions()`, `wm.transition_graph()`."""
 
 
-def build_system_prompt(hud_border: int = 4, expose_undo: bool = True, expose_reset: bool = False,
+def build_system_prompt(hud_border: int = 4, expose_undo: bool = True, expose_reset: bool = True,
                         tool_timeout: int = 30, output_tokens: int = 3000,
                         modules: Sequence[str] = DEFAULT_MODULES) -> str:
     parts = [
@@ -153,12 +146,14 @@ GAME_OVER = (
     "before the fatal point.")
 
 LEVEL_RESET = (
-    "LEVEL RESET: the board went back to this level's start position without a game over; a "
-    "life was probably lost. Diagnose before acting: `history[-1].action` is the move after "
-    "which it reset, `history[-1].before_frame` is the board just before it. If the edge bar was "
-    "empty or nearly so there, the move budget ran out: you need a shorter route or something "
-    "that refills the bar. Otherwise that move itself was fatal. Do NOT replay the same "
-    "sequence.")
+    "LEVEL RESET: the board returned to this level's start position. Causes: a fatal move, an "
+    "exhausted move budget, or a deliberate restart mechanic. Check `history[-1]`: its "
+    "`.action` is the move after which it happened and `.before_frame` the board just before. "
+    "If that move was meant to restart (a game mechanic), carry on; otherwise do not replay the "
+    "same sequence.")
+
+TRIM_NOTICE = ("Trim notice: older turns were dropped. Your memory dict still holds: {memory}. "
+               "Retained functions: {functions}.")
 
 TAIL_FIRST = ("Start with a compact structural summary of `current_frame` from Python (not a "
               "printout of the board), then probe. When ready, call `action(...)` from inside "
@@ -171,9 +166,22 @@ RESUME = ("You paused on the turn budget. Your earlier tool results above are st
           "not restart the analysis. Continue from them and call `action(...)` with your best "
           "next action or short batch.")
 
+NUDGE_CUT = ("Your reply hit the length limit before any `python` tool call, so nothing happened. "
+             "Think briefly, then call the tool: run code to test a hypothesis instead of reasoning "
+             "it through. Keep this reply short.")
 NUDGE = ("You have not acted yet: no `python` tool call was made. Use the `python` tool to "
          "inspect the board if needed, and call `action(...)` inside it. Do not write actions "
          "as plain text.")
+
+
+# Batch stops that only restate the action's own effect; describe_result does not repeat them.
+EFFECT_STOPS = ("game_over", "level_completed", "level_reset", "run_complete", "reset")
+
+
+def trim_notice(memory_summary: str, retained: Sequence[str] = ()) -> str:
+    """Prefix for the first user message after a trim dropped turns (agent.py adds it)."""
+    return TRIM_NOTICE.format(memory=memory_summary or "(empty)",
+                              functions=", ".join(retained) or "none") + "\n"
 
 
 def describe_result(r: ActionResult) -> str:
@@ -184,7 +192,9 @@ def describe_result(r: ActionResult) -> str:
     if r.game_over:
         effect = "GAME OVER"
     elif r.level_reset:
-        effect = "LEVEL RESET (back to the level start, life probably lost)"
+        effect = "LEVEL RESET (back to the level start)"
+    elif r.action.name == "RESET" and not r.automatic:
+        effect = "level restarted from its start board"
     elif r.level_completed:
         effect = "level completed"
     elif r.gameplay_changed:
@@ -195,9 +205,20 @@ def describe_result(r: ActionResult) -> str:
         effect = "no change"
     if r.transient_pixels:
         effect += f", animated with {r.transient_pixels} transient cells"
-    if r.stop_reason:
+    if r.stop_reason and r.stop_reason not in EFFECT_STOPS:
         effect += f", then stopped ({r.stop_reason})"
     return f"{name}: {effect}"
+
+
+def budget_line(results: Sequence[ActionResult], can_reset: bool = True) -> Optional[str]:
+    """Opener line with the move-budget estimate after the last executed action, if any."""
+    last = next((r for r in reversed(results) if r.executed and not r.automatic), None)
+    if last is None or last.budget_left is None:
+        return None
+    band = (last.budget_bar or "edge").split(" band")[0]
+    text = (f"Move budget: ~{last.budget_left} actions left on this level (bar on the {band} "
+            f"edge: {last.budget_bar}). Plan length must fit")
+    return text + ("; if it cannot, RESET first." if can_reset else ".")
 
 
 def summarize_sequence(results: Sequence[ActionResult], max_lines: int = 12) -> list[str]:
@@ -221,8 +242,9 @@ def summarize_sequence(results: Sequence[ActionResult], max_lines: int = 12) -> 
                      "only in `last_animation_frames` - inspect it before concluding nothing "
                      "happened.")
     for r in real:
-        if r.stop_reason and r.message:
-            lines.append(f"Guard stop ({r.stop_reason}): {r.message}")
+        if r.stop_reason and r.stop_reason not in EFFECT_STOPS and r.message:
+            skipped = f", {r.skipped} requested action(s) not run" if r.skipped else ""
+            lines.append(f"Guard stop ({r.stop_reason}{skipped}): {r.message}")
     return lines
 
 
@@ -240,6 +262,9 @@ def build_opener(results: Sequence[ActionResult], step: int, level: int, win_lev
         lines.append(LEVEL_RESET)
     elif any(r.level_completed for r in results):
         lines.append(LEVEL_START)
+    budget = budget_line(results, can_reset="RESET" in valid_actions)
+    if budget:
+        lines.append(budget)
     total = f" of {win_levels}" if win_levels else ""
     lines.append(f"Current state: step {step}, level {level + 1}{total} "
                  f"({level} completed). Valid actions: {', '.join(valid_actions)}.")
@@ -280,7 +305,16 @@ def tool_result_text(stdout: str, error: Optional[str], actions: Sequence[Action
     if error:
         parts.append("[error] " + error.rstrip())
     if actions:
-        parts.append("[actions] " + "; ".join(describe_result(r) for r in actions))
+        line = "[actions] " + "; ".join(describe_result(r) for r in actions)
+        stop = next((r for r in reversed(actions) if r.stop_reason), None)
+        if stop is not None:
+            line += f" | stopped: {stop.stop_reason}"
+            if stop.skipped:
+                line += f", {stop.skipped} requested action(s) not run"
+        last = next((r for r in reversed(actions) if r.executed), None)
+        if last is not None and last.budget_left is not None:
+            line += f" | move budget ~{last.budget_left} left"
+        parts.append(line)
         parts.extend(diff_lines(actions))
     if retained:
         parts.append("[retained functions] " + ", ".join(retained))

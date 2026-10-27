@@ -45,7 +45,7 @@ PYTHON_TOOL = {
 @dataclass
 class AgentConfig:
     context_tokens: int = 116_000       # prompt budget; trimming starts above this
-    output_tokens: int = 12_000         # max_tokens per completion
+    output_tokens: int = 8_000          # max_tokens per completion (run #3: 12k let 20 calls think to the cap)
     drain_tokens: int = 58_000          # trim down to context_tokens - drain_tokens
     yield_tokens: int = 2048            # generated tokens per turn before yielding
     temperature: float = 0.7
@@ -85,6 +85,12 @@ class GameStats:
     state: str = ""
     end_reason: str = ""
     seconds: float = 0.0
+
+
+def _prepend_text(prefix: str, opener):
+    if isinstance(opener, str):
+        return prefix + "\n" + opener
+    return [text_part(prefix)] + list(opener)
 
 
 class AgentFailure(RuntimeError):
@@ -204,6 +210,10 @@ class Agent:
             parts.append(image_part(png))
         return parts
 
+    def _memory_summary(self) -> str:
+        fn = getattr(self.tool, "memory_summary", None)
+        return fn() if callable(fn) else ""
+
     def _resume_text(self, session) -> str:
         obs = session.current
         return (prompts.RESUME + f"\nCurrent state: step {obs.step}, level {obs.levels_completed + 1}. "
@@ -291,6 +301,7 @@ class Agent:
                      "stops": [r.stop_reason for r in res.actions if r.stop_reason]})
         text = prompts.tool_result_text(res.stdout, res.error, res.actions, res.truncated,
                                         res.retained_functions, res.rejected_functions)
+        self._trace({"kind": "tool_result", "text": text[:3000]})   # what the model actually saw
         return text, list(res.actions)
 
     # ------------------------------------------------------------ turn
@@ -302,10 +313,13 @@ class Agent:
         if callable(reset):
             reset()
         cfg, ts, t0 = self.cfg, TurnStats(), time.time()
-        if self.resume_next:
-            self.context.add_user(self._resume_text(session))
-        else:
-            self.context.add_user(self.build_opener(session))
+        opener = self._resume_text(session) if self.resume_next else self.build_opener(session)
+        if getattr(self.context, "trimmed_since_last_user", False):
+            # older turns were dropped: remind the model what still persists (memory, functions)
+            notice = prompts.trim_notice(self._memory_summary(), self.retained)
+            opener = _prepend_text(notice, opener)
+            self.context.trimmed_since_last_user = False
+        self.context.add_user(opener)
         self.first_turn = False
 
         results: list[ActionResult] = []
@@ -330,7 +344,8 @@ class Agent:
                     break
                 nudged = True
                 self.stats.nudges += 1
-                self.context.add_user(prompts.NUDGE)
+                cut = resp.finish_reason == "length"
+                self.context.add_user(getattr(prompts, "NUDGE_CUT", prompts.NUDGE) if cut else prompts.NUDGE)
                 continue
 
             for call in resp.tool_calls:
