@@ -902,9 +902,11 @@ class WM:
             shown.append({"color": k["color"], "size": k["size"], "row": int(r0), "col": int(c0)})
         return {"objects": shown, "total": len(objs)}
 
-    def blocked_moves(self, record=None) -> dict:
+    def blocked_moves(self, record=None, max_grids: int = 40) -> dict:
         """Directional moves that moved nothing, with the colours of the cells the avatar would
-        have entered, plus the colours successful moves did enter. Returns {'blocked': {name:
+        have entered, plus the colours successful moves did enter. The avatar is the piece of
+        the avatar colour with the shape seen moving. Colours are read from the most recent
+        `max_grids` cases of each kind (counts cover the whole level). Returns {'blocked': {name:
         {'count', 'colors' (ints; -1 = the board edge)}}, 'entered': [ints]}; 'blocked' is empty
         when every recorded move moved something."""
         rec = self._rec(record)
@@ -913,27 +915,35 @@ class WM:
         if not avatars:
             return {"blocked": {}, "entered": []}
         color = avatars[0]["color"]
-        blocked: dict = {}
-        entered: set = set()
-        for i, (before, action, _, out) in enumerate(rec.transitions):
+        cases = []   # (index, name, before, after, blocked?)
+        for i, (before, action, after, out) in enumerate(rec.transitions):
             name = norm_action(action)["action"]
             info = motion["actions"].get(name)
-            if info is None or out != "ongoing":
-                continue
-            is_blocked = i in info["blocked_cases"]
-            dy, dx = info["dy"], info["dx"]
+            if info is not None and out == "ongoing":
+                cases.append((name, np.asarray(before), np.asarray(after),
+                              i in info["blocked_cases"]))
+        blocked: dict = {}
+        for name, _, _, is_blocked in cases:
             if is_blocked:
-                entry = blocked.setdefault(name, {"count": 0, "colors": set()})
-                entry["count"] += 1
-            if (dy, dx) == (0, 0):
-                continue   # never seen this move succeed: no idea which cells it targets
-            g = np.asarray(before)
-            comps = components(g, {color})
-            if not comps:
-                continue
-            av = max(comps, key=lambda k: k["size"])
-            target = _entered_colors(g, av["cells"], dy, dx)
-            (entry["colors"] if is_blocked else entered).update(target)
+                blocked.setdefault(name, {"count": 0, "colors": set()})["count"] += 1
+        entered: set = set()
+        shapes: Counter = Counter()
+        for name, before, after, is_blocked in [c for c in cases if not c[3]][-max_grids:]:
+            for comp, off in _moved_components(before, after):
+                if comp["color"] == color:
+                    shapes[_shape(comp)] += 1
+                    entered.update(_entered_colors(before, comp["cells"], *off))
+        if blocked and shapes:
+            shape = shapes.most_common(1)[0][0]
+            for name, before, _, _ in [c for c in cases if c[3]][-max_grids:]:
+                info = motion["actions"][name]
+                dy, dx = info["dy"], info["dx"]
+                if (dy, dx) == (0, 0):
+                    continue   # never seen this move succeed: no idea which cells it targets
+                comps = [k for k in components(before, {color}) if _shape(k) == shape]
+                if comps:
+                    blocked[name]["colors"].update(
+                        _entered_colors(before, comps[0]["cells"], dy, dx))
         return {"blocked": {n: {"count": e["count"], "colors": sorted(e["colors"])}
                             for n, e in blocked.items()},
                 "entered": sorted(entered)}
@@ -1055,11 +1065,18 @@ def _check_summary(out: dict) -> str:
 def _component_moves(before: np.ndarray, after: np.ndarray) -> list[tuple[int, tuple]]:
     """(color, (dy, dx)) for components of `before` that vanished and reappear translated with the
     same shape in `after`."""
+    return [(comp["color"], off) for comp, off in _moved_components(before, after)]
+
+
+def _moved_components(before: np.ndarray, after: np.ndarray) -> list[tuple[dict, tuple]]:
+    """(component of `before`, (dy, dx)) for components that reappear translated in `after`."""
     if before.shape != after.shape or np.array_equal(before, after):
         return []
     changed = before != after
-    bcomps = [k for k in components(before) if any(changed[p] for p in k["cells"])]
-    acomps = [k for k in components(after) if any(changed[p] for p in k["cells"])]
+    # Only components touching a changed cell can have moved; seeding the flood fill from those
+    # cells costs a fraction of segmenting both full boards (the opener calls this every turn).
+    bcomps = _components_touching(before, changed)
+    acomps = _components_touching(after, changed)
     bg = background(before)
     moves = []
     for b in bcomps:
@@ -1070,15 +1087,19 @@ def _component_moves(before: np.ndarray, after: np.ndarray) -> list[tuple[int, t
             if a["color"] == b["color"] and a["size"] == b["size"] and _shape(a) == bshape:
                 off = (a["bbox"][0] - b["bbox"][0], a["bbox"][1] - b["bbox"][1])
                 if off != (0, 0):
-                    moves.append((b["color"], off))
+                    moves.append((b, off))
                     break
     return moves
 
 
-def _component_at(grid: np.ndarray, r: int, c: int) -> Optional[dict]:
-    """The same-colour 4-connected component containing (r, c), or None off-board/background."""
+def _component_at(grid: np.ndarray, r: int, c: int,
+                  include_background: bool = False) -> Optional[dict]:
+    """The same-colour 4-connected component containing (r, c); None off-board or (unless
+    include_background) on the background colour."""
     rows, cols = grid.shape
-    if not (0 <= r < rows and 0 <= c < cols) or int(grid[r, c]) == background(grid):
+    if not (0 <= r < rows and 0 <= c < cols):
+        return None
+    if not include_background and int(grid[r, c]) == background(grid):
         return None
     color = grid[r, c]
     seen, stack, cells = {(r, c)}, [(r, c)], []
@@ -1104,6 +1125,18 @@ def _entered_colors(grid: np.ndarray, cells, dy: int, dx: int) -> set:
         if (nr, nc) in cells:
             continue
         out.add(int(grid[nr, nc]) if 0 <= nr < rows and 0 <= nc < cols else -1)
+    return out
+
+
+def _components_touching(grid: np.ndarray, mask: np.ndarray) -> list[dict]:
+    """Same-colour 4-connected components that contain at least one cell of `mask`."""
+    out, seen = [], set()
+    for r, c in zip(*np.nonzero(mask)):
+        if (r, c) in seen:
+            continue
+        comp = _component_at(grid, int(r), int(c), include_background=True)
+        seen.update(comp["cells"])
+        out.append(comp)
     return out
 
 
