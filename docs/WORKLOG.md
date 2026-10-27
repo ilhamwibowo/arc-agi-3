@@ -28,3 +28,4 @@
   game offers it; review fixes C–F (silent level reset, auto object diff, `memory` dict, WORLD_MODEL
   prompt rework, verify current level by default) delegated.
 - 08:50 Run #3 pushed: `wibowoilham/arc3-dev9b` v1 — same 9 games/cap as run #2, with all review fixes (commit 86c38b6). Record: runs/kaggle/arc3-dev9b/1.
+- 08:10 Cancelled run #2 (deleted queued kernel arc3-dev9): old-code baseline not worth 3 h of GPU; run #1 + dfranzen table serve as reference. Run #3 (dev9b) running since 07:53.
