@@ -43,7 +43,7 @@ def test_two_turn_game_wins():
         FakeLLM.code("print(int(current_frame.sum()))", reasoning="look first"),
         FakeLLM.code("action(['RIGHT', 'RIGHT'])"),
         FakeLLM.code("action(['SPACE'])"),
-    ])
+    ], send_images=True)  # image plumbing is still exercised with images enabled
     session = FakeSession()
     stats = agent.play_game(session)
     assert stats.end_reason == "win"
@@ -104,7 +104,7 @@ def test_no_tool_call_nudge():
 
 def test_game_over_opener():
     agent, llm = make_agent([FakeLLM.code("action(['RIGHT', 'DOWN', 'RIGHT'])"),
-                             FakeLLM.code("print('diagnose')")], max_turns=2)
+                             FakeLLM.code("print('diagnose')")], max_turns=2, send_images=True)
     session = FakeSession()
     agent.play_game(session)
     assert session.resets == 1
