@@ -69,3 +69,19 @@
 - 16:40 Run #6 v1 FAILED at SGLang boot in 70 s: "CUDA driver error: out of memory" at context creation. Cause: my new
   40 GB RLIMIT_AS cap was set in the notebook process before SGLang was spawned, so the child inherited it.
   Fix: launch_sglang resets RLIMIT_AS in the child (preexec_fn). Pushed `arc3-full25b` v2 (16:50).
+
+## 2026-10-27 18:00 WIB — run #5 result (runs/kaggle/arc3-full25/1): all 25 games, 3 h cap, images on, old sandbox
+- Clean: boot 761 s, 25 ok, 0 errors, 0 hung, RAM flat 107 GB (no runaway snippet this time).
+- 86/183 levels, mean score 0.378 vs dfranzen reference 0.465 on the same 25 games. Wins: ar25 8/8, sb26 8/8.
+  Above ref: ar25, m0r0 5/6 (3.2), g50t 5/7 (1.8), sc25 4/6 (2.8), lf52 2/10 (1.0), bp35 2/9 (1.0).
+  Far below ref: cd82 1/6 (6.0), vc33 3/7 (6.0; 7/7 in run #3), tn36 1/7 (4.2), dc22 0/6 (3.8; 4/6 in run #3),
+  ka59 1/7 (2.8), ft09 4/6 (5.5). Zero levels: dc22, sk48, wa30. → trace review delegated (docs/trace-review-run5.md).
+- Throughput is the binding constraint: 10 decode slots for 25 games → each game waited 40–80 % of its 3 h
+  (e.g. dc22: 1910 s in model calls out of 10864 s). Server ran 8–10 requests 97 % of the time, queue>0 in
+  30 % of batches, KV pool 68 % mean / 99 % max, 636 gen tok/s aggregate, 40 tok/s per stream, accept len 2.6.
+  2149 calls, 4.2M gen tokens: calls ≥3k output tokens are 22 % of calls but 56 % of model time; 79 hit the
+  8k cap. Uncached prompt 7.3k tok/call median (images on; cache 54 %).
+- Competition is 1.5× tighter (110 games / 9 h = 0.82 slot-hours per game vs 1.2 here) → expect < 0.378.
+  Levers: (1) text-only (run #6); (2) more slots via smaller context (trim target ~60k, --max-running-requests
+  14–16); (3) scheduler: allocate slot time by progress rate, starve games at 0 levels after a probe budget;
+  (4) shorter thinking on routine turns.
