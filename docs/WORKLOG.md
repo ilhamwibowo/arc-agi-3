@@ -39,3 +39,9 @@
   wm tools used 0/1233 calls (reworked prompt made usage worse, not better). level_reset never fired.
 - Next: run #4 = images A/B (4 games with images, 4 text-only, 1 h cap) to settle the cache question.
 - 11:00 Run #4 pushed: `wibowoilham/arc3-ab-images` v1 (images on: sb26 dc22 ls20 ft09; off: vc33 re86 tu93 bp35; 1 h cap).
+- 11:25 Review of run #3 weak games (docs/trace-review-run3-weak.md): 93 actions burned on purpose to exhaust
+  budgets (RESET not exposed), 270 actions lost to budget-exhausted first attempts in wa30, wm unused 0/604.
+  Fixes (docs/fix-review-3.md, commit d5181f1): RESET exposed + never-burn rule, budget-bar
+  readout, wm.check/plan_abstract with a 1600-char WORLD_MODEL, trims strip old reasoning first + trim notice
+  with memory summary, stop_reason visible, thinking cap 8k, NUDGE_CUT, tool_result traced. 126 tests.
+- 11:30 Run #5 pushed: `wibowoilham/arc3-full25` v1 — all 25 public games, 3 h cap (queues behind run #4).
