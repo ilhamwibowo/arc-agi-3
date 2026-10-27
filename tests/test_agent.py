@@ -295,3 +295,23 @@ def test_gate_timeout_is_deadline():
                   progress=__import__("arc3.scheduler", fromlist=["GameProgress"]).GameProgress("g"),
                   render_png=lambda g, s: fake_png())
     assert agent.play_game(FakeSession()).end_reason == "deadline"
+
+
+def test_idle_turns_release_slot_then_park():
+    # run #6 sb26: 130 consecutive turns of refused RESET no-ops held a decode slot for 2.7 h.
+    from arc3.scheduler import GameProgress
+    gate, progress, naps = _Gate(), GameProgress("fake"), []
+    script = [FakeLLM.code("print('hold')", tokens=20) for _ in range(9)]
+    script += [FakeLLM.code("action(['RIGHT', 'RIGHT'])", tokens=30), FakeLLM.code("action(['SPACE'])", tokens=30)]
+    llm = FakeLLM(script)
+    cfg = AgentConfig(retry_sleep=0, max_tool_calls_per_turn=1, idle_turns_notice=3,
+                      idle_turns_sleep=6, idle_sleep_seconds=600)
+    agent = Agent(llm, cfg, tool_factory=FakeTool, gate=gate, progress=progress, sleep=naps.append,
+                  render_png=lambda g, s: fake_png(), render_diff_png=lambda a, b, s: fake_png())
+    stats = agent.play_game(FakeSession())
+    assert stats.end_reason == "win"
+    assert naps == [600, 600]                  # parked after idle turns 6 and 9 (counter falls back to 3)
+    assert gate.releases >= 2                  # released at the notice threshold, and when parked
+    notices = [m for c in llm.calls for m in user_texts(c["messages"])[-1:] if "Idling earns nothing" in m]
+    assert len(notices) >= 3                   # shown from the 3rd idle turn on, and after parking
+    assert agent.idle_turns == 0               # the real action cleared the counter

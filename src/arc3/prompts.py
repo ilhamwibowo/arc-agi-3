@@ -168,6 +168,13 @@ RESUME = ("You paused on the turn budget. Your earlier tool results above are st
           "not restart the analysis. Continue from them and call `action(...)` with your best "
           "next action or short batch.")
 
+def idle_notice(idle_turns: int) -> str:
+    return (f"NOTICE: your last {idle_turns} turns executed no action. Idling earns nothing: completed "
+            "levels are never lost whatever happens next, a no-op RESET is refused, and no move is "
+            "'parked' or saved by waiting. The only way to score more is to attempt this level now: "
+            "take your best hypothesis, even an uncertain one, and test it with real actions.\n\n")
+
+
 NUDGE_CUT = ("Your reply hit the length limit before any `python` tool call, so nothing happened. "
              "Think briefly, then call the tool: run code to test a hypothesis instead of reasoning "
              "it through. Keep this reply short.")

@@ -60,6 +60,9 @@ class AgentConfig:
     images_window: int = 1   # >1 breaks the server prefix cache on every new image (run #1)
     keep_reasoning: bool = True
     max_tool_calls_per_turn: int = 12
+    idle_turns_notice: int = 3    # consecutive turns with no executed action → notice + release slot
+    idle_turns_sleep: int = 6     # ... → park the game for idle_sleep_seconds (run #6 sb26: 130 idle turns)
+    idle_sleep_seconds: float = 600.0
     max_llm_failures: int = 10          # consecutive failed model calls before giving up
     retry_sleep: float = 10.0
     llm_timeout: float = 900.0
@@ -148,6 +151,7 @@ class Agent:
         self.last_results: list[ActionResult] = []
         self.retained: list[str] = []
         self.resume_next = False
+        self.idle_turns = 0           # consecutive turns that executed no action
         self.first_turn = True
         self.consecutive_failures = 0
         self.turn_end_reason = ""
@@ -287,6 +291,18 @@ class Agent:
         if self._slot_since is None:
             self._slot_since = self._clock()
 
+    def _park(self, deadline: Optional[float]) -> None:
+        """The model keeps ending turns without acting: give the slot to other games for a while.
+        The idle counter drops back to the notice threshold so the notice keeps showing."""
+        self._release_slot()
+        wait = self.cfg.idle_sleep_seconds
+        if deadline is not None:
+            wait = min(wait, max(0.0, deadline - time.time()))
+        self._trace({"kind": "idle_park", "idle_turns": self.idle_turns, "seconds": round(wait, 1)})
+        if wait > 0:
+            self._sleep(wait)
+        self.idle_turns = self.cfg.idle_turns_notice
+
     def _release_slot(self) -> None:
         if self.gate is not None and self.progress is not None:
             self.gate.release(self.progress)
@@ -359,6 +375,8 @@ class Agent:
             notice = prompts.trim_notice(self._memory_summary(), self.retained)
             opener = _prepend_text(notice, opener)
             self.context.trimmed_since_last_user = False
+        if self.idle_turns >= cfg.idle_turns_notice:
+            opener = _prepend_text(prompts.idle_notice(self.idle_turns), opener)
         self.context.add_user(opener)
         self.first_turn = False
 
@@ -419,6 +437,11 @@ class Agent:
             self.last_results = results
         self.resume_next = not acted
         self.turn_end_reason = reason
+        self.idle_turns = 0 if ts.actions else self.idle_turns + 1
+        if self.idle_turns >= cfg.idle_turns_notice and self._slot_since is not None:
+            # an idling game must not hold a decode slot (run #6 sb26 parked for 2.7 h on RESET no-ops)
+            self._release_slot()
+            self._trace({"kind": "idle_release", "idle_turns": self.idle_turns})
         ts.seconds = time.time() - t0
         self._accumulate(ts)
         self._update_progress(session, ts)
@@ -466,6 +489,8 @@ class Agent:
             reason = self._stop_reason(session, deadline)
             if reason:
                 break
+            if self.idle_turns >= self.cfg.idle_turns_sleep:
+                self._park(deadline)
             try:
                 self.play_turn(session, deadline)
             except AgentFailure as e:
