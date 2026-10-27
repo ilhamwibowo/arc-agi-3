@@ -30,7 +30,7 @@ SERVED_MODEL_NAME = "flashnext"
 PORT = 30000
 PREFIX = "/tmp/sgl-pennyroyal"
 
-CFG = dict(CTX=139264, MEMFRAC=0.96, MAXREQ=10, MAMBA_CACHE=60, CHUNK=8192, MAX_PREFILL=16384,
+CFG = dict(CTX=139264, MEMFRAC=0.96, MAXREQ=12, MAMBA_CACHE=60, CHUNK=8192, MAX_PREFILL=16384,
            KVDTYPE="fp8_e4m3", SSM_DTYPE="bfloat16", BACKEND="flashinfer", SPEC_STEPS=3,
            GRAPH_BS=(1, 2, 4, 7, 8, 9, 10))
 # Integrity pins of the FR-Spec hot-token map and the tokenizer it was built for.

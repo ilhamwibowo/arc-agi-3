@@ -104,3 +104,10 @@
   refuses a second consecutive no-op RESET.
 - 20:50 Idle guard committed: after 3 consecutive turns with no executed action the opener carries an "idling earns
   nothing" notice and the decode slot is released; after 6 the game parks 10 min (then counter back to 3). 147 tests.
+
+### 2026-10-27 21:35 Run #7 result (arc3-full25c v1, all 25 games, 3 h cap, text-only + fix round, no idle guard)
+- 113/183 levels, mean 0.476 (run #6: 114/183, 0.500). Flat within per-game noise: g50t 0→4, vc33 3→6, bp35 1→3 up; cn04 4→1, s5i5 4→2, m0r0 6→5 down. 6 wins (ar25 cd82 ft09 lp85 tr87 + none new). No errors, server healthy, 25 ok.
+- Cost side: 4626 calls at 23.0 s (run #6: 5882 at 18.2 s). Prompt tokens/call equal (~77k); generated tokens/call 1634 vs 1339 (+22 %), so the fix-round prompt lines made the model think longer, not shorter.
+- Slot wait sum 1998 min (run #6: 2209 min); per game 15–132 min of the 180 min wall. KV pool 75 % mean / 99 % max with ~9.2 running requests: the KV pool, not the slot count, is the ceiling.
+- sb26 again 4/8 but no RESET loop this time (the idle guard was not in this build anyway).
+- Decision: run #8 = idle guard + 12 slots (MAX_ACTIVE, MAXREQ) + context 80k/drain 30k so 12 concurrent prompts fit the pool (12 × ~55k ≈ 660k). Risk: more trims. Compare vs run #6.
