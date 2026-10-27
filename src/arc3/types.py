@@ -86,6 +86,8 @@ class ActionResult:
     before: Optional[np.ndarray] = None
     after: Optional[np.ndarray] = None
     frames: list[np.ndarray] = field(default_factory=list)
+    level_reset: bool = False             # board silently went back to the level start (life lost)
+    diff: str = ""                        # one-line object diff before->after (set by the sandbox)
 
 
 @dataclass

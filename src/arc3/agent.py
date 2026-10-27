@@ -53,7 +53,7 @@ class AgentConfig:
     top_k: Optional[int] = 20
     seed: Optional[int] = None
     image_scale: int = 10
-    images_window: int = 2
+    images_window: int = 1   # >1 breaks the server prefix cache on every new image (run #1)
     keep_reasoning: bool = True
     max_tool_calls_per_turn: int = 12
     max_llm_failures: int = 10          # consecutive failed model calls before giving up
@@ -120,7 +120,9 @@ class Agent:
         gc = getattr(session, "config", None)
         system = prompts.build_system_prompt(
             hud_border=getattr(gc, "hud_border", 4),
-            expose_undo=getattr(gc, "expose_undo", True),
+            # list UNDO only when the game actually offers it (run #1: the model tried an invalid UNDO)
+            expose_undo=getattr(gc, "expose_undo", True)
+            and "UNDO" in getattr(session.current, "available_actions", ["UNDO"]),
             expose_reset=getattr(gc, "expose_reset", False),
             tool_timeout=cfg.tool_timeout, output_tokens=cfg.tool_output_tokens)
         self.context = ContextManager(

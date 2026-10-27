@@ -30,6 +30,8 @@ class GameSession:
         self.started = time.time()
         self.on_action = on_action
         self._trace_file = open(trace_path, "a") if trace_path else None
+        # First board of the current level; used to spot silent resets (see _is_level_reset).
+        self.level_start: np.ndarray = self.current.grid
         self.trace({"event": "start", "step": self.current.step,
                     "levels": self.current.levels_completed, "win_levels": self.current.win_levels,
                     "grid": percept.state_hash(self.current.grid)})
@@ -71,15 +73,22 @@ class GameSession:
         chain = percept.collapse_frames(before.grid, after.frames)
         transient, _bbox = percept.transient_cells(chain) if len(chain) > 2 else (0, None)
         level_completed = after.levels_completed > before.levels_completed
+        alive = after.state not in (GameState.GAME_OVER, GameState.WIN)
+        level_reset = (alive and not level_completed
+                       and action.name not in ("RESET", "UNDO") and board_changed
+                       and self._is_level_reset(before.grid, after.grid, int(transient)))
         res = ActionResult(
             action=action, executed=True, board_changed=board_changed,
             gameplay_changed=gameplay_changed, level_completed=level_completed,
             game_over=after.state == GameState.GAME_OVER, run_complete=after.state == GameState.WIN,
             animated=len(chain) > 2, transient_pixels=int(transient), automatic=automatic,
-            before=before.grid, after=after.grid, frames=list(after.frames))
+            before=before.grid, after=after.grid, frames=list(after.frames),
+            level_reset=level_reset)
         res.message = self._describe(res)
         self.history.append(Transition(len(self.history), action, before, after, res))
         self.previous, self.current = before, after
+        if level_completed:
+            self.level_start = after.grid
         if automatic:
             self.resets += 1
         else:
@@ -87,7 +96,8 @@ class GameSession:
         self.trace({"event": "action", "action": action.display(), "automatic": automatic,
                     "step": after.step, "levels": after.levels_completed, "state": after.state.value,
                     "board_changed": board_changed, "gameplay_changed": gameplay_changed,
-                    "frames": len(chain) - 1, "transient": int(transient),
+                    "level_reset": level_reset, "frames": len(chain) - 1,
+                    "transient": int(transient),
                     "grid": percept.state_hash(after.grid), "t": round(time.time() - self.started, 2)})
         if self.on_action:
             self.on_action(res)
@@ -99,6 +109,31 @@ class GameSession:
         return self.step(Action("RESET"), automatic=True)
 
     # ---- helpers -------------------------------------------------------------------------------
+
+    def _is_level_reset(self, before: np.ndarray, after: np.ndarray, transient: int) -> bool:
+        """True when `after` is the level's start board again although `before` was not.
+
+        Some games (ls20) answer a fatal move or an exhausted move budget by putting the level
+        back to its start and taking a life, without a GAME_OVER state. Only the interior is
+        compared: the HUD band (lives, budget bar) differs from the start after a life is lost.
+        Walking back to the start square also restores the interior, so we additionally require
+        a reset-like signature: the HUD band moved back toward its start state (the budget bar
+        refilled) or a large flash animation played.
+        """
+        b = self.config.hud_border
+        start = self.level_start
+        if before.shape != start.shape or after.shape != start.shape:
+            return False
+        inner = (slice(b, start.shape[0] - b), slice(b, start.shape[1] - b)) if b else \
+            (slice(None), slice(None))
+        if not np.array_equal(after[inner], start[inner]) or \
+                np.array_equal(before[inner], start[inner]):
+            return False
+        if not b:
+            return True   # no HUD band configured: nothing else to check
+        hud_off = lambda g: int((g != start).sum() - (g[inner] != start[inner]).sum())
+        flash = transient >= (start.shape[0] - 2 * b) * (start.shape[1] - 2 * b) // 4
+        return hud_off(after) < hud_off(before) or flash
 
     def _refused(self, action: Action, reason: str, message: str) -> ActionResult:
         return ActionResult(action=action, executed=False, board_changed=False,
@@ -114,6 +149,9 @@ class GameSession:
             return "GAME OVER: this attempt failed"
         if r.level_completed:
             return "level completed"
+        if r.level_reset:
+            return ("LEVEL RESET: the board went back to the level's start position (a life was "
+                    "probably lost: the previous move was fatal or the move budget ran out)")
         if not r.board_changed:
             return "nothing changed"
         if not r.gameplay_changed:

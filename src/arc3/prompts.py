@@ -59,6 +59,7 @@ SIGNALS = """\
 - A bar along the edge that shrinks every action is usually a move budget. Do not mistake its segments for clickable objects.
 - One action may play a short animation. `transient_pixels` > 0 means some cells changed and changed back mid-animation; that evidence exists only in `last_animation_frames`, so inspect them then.
 - `game_over`: this attempt FAILED (hazard, or budget ran out). The harness resets the level automatically; completed levels are kept. It never means you won.
+- `level_reset`: the board jumped back to the level's start without a game over; a life was probably lost (fatal move or empty budget). Treat it like `game_over`.
 - `level_completed`: you advanced a level; the next board is already in `current_frame`. `run_complete`: the whole game is won.
 - After any of these flags, stop acting in the current call and re-examine the board next turn. Guards may also stop a batch early (for example after an action that changed nothing in the interior); the stop reason is reported."""
 
@@ -66,6 +67,7 @@ TOOL = """\
 ## The python tool
 - One tool, `python(code)`. Each call has a {timeout}s limit and its printed output is cut to about {out_tokens} tokens, so print compact summaries: object lists, counts, coordinates, small crops. Never print a whole board.
 - Variables reset between calls, but top-level functions you define are kept and can be called later (no decorators/annotations; pass data as arguments). Importable modules: {modules}.
+- `memory` is a dict that persists across calls; variables do not. Store plans, maps, rule notes there (`memory['plan'] = ...`). Mutate it; do not reassign it.
 - Call the tool as often as you like. When unsure, run code rather than reasoning longer: code answers in a second what thinking only guesses."""
 
 STRATEGY = """\
@@ -78,14 +80,40 @@ STRATEGY = """\
 - The game is deterministic: a sequence that failed once will fail again."""
 
 
+# Worked example shown in WORLD_MODEL. Kept separate so a test can execute it (tests/test_prompts.py).
+WM_EXAMPLE = """\
+def init(grid, level):        # extra keys start here
+    return {'grid': grid.copy(), 'goal': frozenset(map(tuple, np.argwhere(grid == 11).tolist()))}
+def transition(state, action):  # state is a copy: edit and return it
+    d = {'UP': (-1, 0), 'DOWN': (1, 0), 'LEFT': (0, -1), 'RIGHT': (0, 1)}.get(action['action'])
+    g = state['grid']
+    if d is None:
+        return state
+    old = np.argwhere(g == 9)                 # blue block
+    new = old + np.array(d) * 5               # step from wm.induce_motion()
+    if new.min() < 4 or new.max() >= 60 or (g[new[:, 0], new[:, 1]] == 5).any():
+        return state                          # wall or edge: blocked
+    g[old[:, 0], old[:, 1]] = 0               # floor
+    g[new[:, 0], new[:, 1]] = 9
+    return state
+def outcome(state):
+    hit = any(tuple(p) in state['goal'] for p in np.argwhere(state['grid'] == 9).tolist())
+    return 'level_complete' if hit else 'ongoing'
+wm.register(transition, outcome, init=init)
+print(wm.verify()['summary'])"""
+
 WORLD_MODEL = """\
-## Executable world model (optional, powerful)
-Once you understand the mechanics, let code find the shortest plan. `wm` is a global in every call:
-- Free helpers, no model needed: `wm.induce_motion()` (what each direction moves, by how much, when it was blocked), `wm.untried_actions()`, `wm.transition_graph()` (no-ops, deaths, revisited states).
-- Write `transition(state, action)` returning a NEW state dict and `outcome(state)` returning 'ongoing', 'level_complete' or 'game_over'. `state['grid']` is a numpy board; add hidden fields (counters, inventory) as extra keys and an `init=lambda grid, level: {...}` for them. `action` is a dict: test `action['action'] == 'UP'` (clicks also have 'row', 'col').
-- `wm.register(transition, outcome)` then `wm.verify()`: it replays every recorded move (the outer 4-cell HUD border is ignored unless `strict=True`) and reports the first divergence as 'expected->predicted @ row cols'. Fix that one and verify again until `ok`.
-- `plan = wm.plan()` searches your model for the fewest actions reaching 'level_complete' (or `wm.plan(goal=fn)`; `wm.goal_menu()` lists candidate goals). Then `wm.execute(plan['actions'])` plays it and stops at the first step where the real board differs from your prediction.
-- verify and plan cost no game actions. Score is roughly quadratic in action efficiency, so a verified model plus the planner usually beats hand-played moves. Do not hardcode per-level branches in `transition`."""
+## World model: the default way to finish a level
+Once you can predict what a move does, write a simulator and let `wm` (a global) search it. verify and plan are free; only execute acts. A verified model plus the planner beats hand play.
+- `transition(state, action)` returns the next state; `outcome(state)` returns 'ongoing', 'level_complete' or 'game_over'. Test `action['action'] == 'UP'` (MOUSE also has 'row', 'col'). `state['grid']` is the board; other keys (positions, counters, keys held) come from `init(grid, level)`, so always call `wm.register(transition, outcome, init=init)`.
+- State can be abstract: keep positions or heights in extra keys and render them into 'grid'. verify compares interior cells only (HUD edge ignored), sets 'grid' to the observed board before each step and keeps your extra keys.
+Example (block moves 5 cells unless a black wall blocks it; reaching yellow wins):
+""" + WM_EXAMPLE + """
+- `wm.verify()` replays this level's moves (`all_levels=True` adds earlier levels): `ok`, `summary`, `dynamics.accuracy`, `dynamics.first_divergence` (`level`, `index`, `action`, then `error` or `diff` 'expected->predicted @ row cols'). Fix it and verify again until `ok`.
+- `p = wm.plan()` (or `plan(goal=fn)`): `found`, `actions`, `plan`, `nodes`, `reason`. No plan: `found` False, `actions` empty, `reason` says why.
+- `wm.execute(p['actions'])` plays it for real: `executed`, `mismatch_index` (None if all matched), `expected_diff`, `observed_outcome`, `stop_reason`. A mismatch means fix the model there.
+- Free: `wm.induce_motion()` per-direction offsets, moving colors, blocked cases; `wm.untried_actions()` actions never tried here / this level; `wm.transition_graph()` observed states, no-ops, deaths, revisits.
+- No per-level branches in `transition`."""
 
 
 def build_system_prompt(hud_border: int = 4, expose_undo: bool = True, expose_reset: bool = False,
@@ -124,6 +152,14 @@ GAME_OVER = (
     "The game is deterministic: do NOT replay the sequence that just failed. Change the plan "
     "before the fatal point.")
 
+LEVEL_RESET = (
+    "LEVEL RESET: the board went back to this level's start position without a game over; a "
+    "life was probably lost. Diagnose before acting: `history[-1].action` is the move after "
+    "which it reset, `history[-1].before_frame` is the board just before it. If the edge bar was "
+    "empty or nearly so there, the move budget ran out: you need a shorter route or something "
+    "that refills the bar. Otherwise that move itself was fatal. Do NOT replay the same "
+    "sequence.")
+
 TAIL_FIRST = ("Start with a compact structural summary of `current_frame` from Python (not a "
               "printout of the board), then probe. When ready, call `action(...)` from inside "
               "`python`.")
@@ -147,6 +183,8 @@ def describe_result(r: ActionResult) -> str:
         return f"{name}: refused ({r.stop_reason or 'guard'})"
     if r.game_over:
         effect = "GAME OVER"
+    elif r.level_reset:
+        effect = "LEVEL RESET (back to the level start, life probably lost)"
     elif r.level_completed:
         effect = "level completed"
     elif r.gameplay_changed:
@@ -198,6 +236,8 @@ def build_opener(results: Sequence[ActionResult], step: int, level: int, win_lev
     if fatal is not None:
         lines.append(GAME_OVER)
         lines.append(f"The fatal action was {fatal.action.display()}.")
+    elif any(r.level_reset for r in results):
+        lines.append(LEVEL_RESET)
     elif any(r.level_completed for r in results):
         lines.append(LEVEL_START)
     total = f" of {win_levels}" if win_levels else ""
@@ -209,6 +249,23 @@ def build_opener(results: Sequence[ActionResult], step: int, level: int, win_lev
         lines.append("Attached images: " + "; ".join(images) + ".")
     lines.append(TAIL_FIRST if first_turn else TAIL)
     return "\n".join(lines)
+
+
+def diff_lines(actions: Sequence[ActionResult], max_full: int = 8, edge: int = 2) -> list[str]:
+    """One object-diff line per executed action; long batches show only both ends."""
+    numbered = [(i + 1, r) for i, r in enumerate(actions) if r.executed and r.diff]
+    if not numbered:
+        return []
+    shown, omitted = numbered, 0
+    if len(numbered) > max_full:
+        shown = numbered[:edge] + numbered[-edge:]
+        omitted = len(numbered) - 2 * edge
+    lines = ["[effects]"]
+    for k, (i, r) in enumerate(shown):
+        if omitted and k == edge:
+            lines.append(f"  ... {omitted} actions omitted ...")
+        lines.append(f"  {i} {r.action.display()}: {r.diff}")
+    return lines
 
 
 def tool_result_text(stdout: str, error: Optional[str], actions: Sequence[ActionResult],
@@ -224,6 +281,7 @@ def tool_result_text(stdout: str, error: Optional[str], actions: Sequence[Action
         parts.append("[error] " + error.rstrip())
     if actions:
         parts.append("[actions] " + "; ".join(describe_result(r) for r in actions))
+        parts.extend(diff_lines(actions))
     if retained:
         parts.append("[retained functions] " + ", ".join(retained))
     for name, why in (rejected or {}).items():

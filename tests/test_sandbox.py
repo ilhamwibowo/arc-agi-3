@@ -214,3 +214,63 @@ def test_retained_functions():
     r = tool.run("def dist(a, b=K):\n    return 0\n")
     assert "dist" in r.rejected_functions and "twice" in r.rejected_functions
     assert "NameError" in tool.run("twice((1, 1))").error
+
+
+# ------------------------------------------------------------------ fix-review-1 additions
+
+def test_memory_persists_across_calls_but_variables_do_not():
+    tool = PythonTool(FakeSession())
+    r = tool.run("memory['plan'] = ['UP', 'LEFT']\nx = 5\n"
+                 "def first_step():\n    return memory['plan'][0]")
+    assert r.error is None, r.error
+    assert r.retained_functions == ["first_step"]          # `memory` counts as provided
+    r = tool.run("print(memory, 'x' in dir(), first_step())")
+    assert r.error is None, r.error
+    assert "{'plan': ['UP', 'LEFT']} False UP" in r.stdout
+    tool.run("memory = {}")                                  # rebinding stays local to that call
+    assert "plan" in tool.run("print(memory)").stdout
+
+
+def test_per_action_diff_line_and_tool_text():
+    from arc3 import prompts
+    s = FakeSession(guards_from_level=5)
+    tool = PythonTool(s)
+    r = tool.run("res = action(['UP', 'SPACE'])\nprint(res['per_action'][0]['diff'])")
+    assert r.error is None, r.error
+    assert "moved: 1 (A (4,4)->(3,4))" in r.stdout
+    assert r.actions[0].diff.startswith("moved: 1") and len(r.actions[0].diff) <= 200
+    assert r.actions[1].diff == "no change"                   # SPACE flash settles back
+    text = prompts.tool_result_text(r.stdout, r.error, r.actions)
+    assert "[effects]" in text and "  1 UP: moved: 1" in text
+
+
+def test_tool_text_diff_lines_bounded_for_long_batches():
+    from arc3 import prompts
+    from arc3.types import Action
+    acts = [ActionResult(Action("UP"), True, True, True, False, False, False, False,
+                         diff=f"moved: 1 (#{i})") for i in range(10)]
+    text = prompts.tool_result_text("", None, acts)
+    assert "  1 UP: moved: 1 (#0)" in text and "  10 UP: moved: 1 (#9)" in text
+    assert "(#4)" not in text and "6 actions omitted" in text
+
+
+class ResetSession(FakeSession):
+    """Moving onto (2, 4) silently puts the player back at (4, 4) (a life lost, no game over)."""
+
+    def step(self, a):
+        res = super().step(a)
+        if self.pos == (2, 4):
+            res.level_reset = True
+            res.message = "LEVEL RESET: ..."
+        return res
+
+
+def test_level_reset_stops_batch_like_game_over():
+    tool = PythonTool(ResetSession(guards_from_level=5))
+    r = tool.run("res = action(['UP', 'UP', 'LEFT', 'LEFT'])\n"
+                 "print(res['stop_reason'], res['executed'], res['level_reset'], "
+                 "res['per_action'][-1]['level_reset'])\naction(['LEFT'])")
+    assert "level_reset 2 True True" in r.stdout
+    assert "TerminalStateError" in r.error and len(r.actions) == 2
+    rec = tool.wm._rec()                                       # wm sees the reset as a death
+    assert rec.transitions[-1][3] == "game_over"

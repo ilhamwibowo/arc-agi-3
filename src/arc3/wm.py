@@ -270,10 +270,11 @@ class WM:
         """Hash used by expected_hashes/execute: grid_hash of view(grid, strict)."""
         return grid_hash(self.view(grid, strict))
 
-    def verify(self, record=None, all_levels: bool = True, timeout: float = VERIFY_SECONDS,
+    def verify(self, record=None, all_levels: bool = False, timeout: float = VERIFY_SECONDS,
                strict: bool = False) -> dict:
-        """Check the registered model against recorded settled transitions (this level, plus
-        earlier levels if all_levels). The outer HUD border (4 cells) is ignored unless
+        """Check the registered model against recorded settled transitions of the current level
+        (plus earlier levels if all_levels=True; off by default so a new mechanic does not force
+        re-modelling every solved level). The outer HUD border (4 cells) is ignored unless
         strict=True. Channels: init (init(start)['grid'] == observed start),
         dynamics (replay; a step is graded if the observed grid changed or the model predicted a
         change), outcome (model outcome == recorded outcome at every step). Returns
@@ -585,7 +586,8 @@ class WM:
                 out["observed_outcome"] = "level_complete"
                 out["stop_reason"] = "level_completed"
                 break
-            if res.get("game_over"):
+            if res.get("game_over") or res.get("level_reset"):
+                # A silent level reset (life lost) is a death; the sandbox reports it separately.
                 out["observed_outcome"] = "game_over"
             observed = np.asarray(self._rec().current_grid)
             exp = expected[i] if i < len(expected) else None

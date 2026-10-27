@@ -18,3 +18,12 @@
   fixed: DeadlineReached). (2) API friction, 27 tool errors: `np` not preloaded, `history[-1].frame` /
   `transitions[-1].before_frame` / `res.frame` missing (prompt promised them) → fixed in sandbox.
 - wm tools nearly unused (4 of 196 tool calls, tu93 only). To investigate after a longer baseline.
+- 08:10 Run #2 pushed: `wibowoilham/arc3-dev9` v1 — 9 games (tu93 sb26 ls20 vc33 re86 dc22 bp35 g50t wa30), 2.5 h cap, old code (pre-review fixes) → baseline. Record: runs/kaggle/arc3-dev9/1.
+- Trace review (docs/trace-review-run1.md) + cache analysis: every model call that opened a turn after an
+  action cached exactly 2304 tokens (= system prompt, page-aligned), even before any image-window
+  stripping; calls with an identical image set cached 97–99 %. ⇒ the server hashes a request's images as
+  one unit, so any new image breaks the prefix at the first image. Fix: images_window=1 (only the newest
+  user message carries images → only the last turn re-prefills). To be confirmed in run #3.
+- Also: per-game deadline now starts at model-ready (runner.wait_model_up); UNDO listed only when the
+  game offers it; review fixes C–F (silent level reset, auto object diff, `memory` dict, WORLD_MODEL
+  prompt rework, verify current level by default) delegated.

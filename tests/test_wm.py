@@ -246,3 +246,17 @@ def test_hud_border_ignored_unless_strict():
     observed[0, 0] = 99
     assert hashes == [wm.view_hash(observed)]
     assert wm.expected_hashes(["DOWN"], strict=True) != [wm.view_hash(observed, strict=True)]
+
+
+
+def test_verify_checks_current_level_unless_all_levels():
+    # An earlier level whose recorded dynamics differ (2-cell moves) from the model (1-cell moves).
+    old = make_record(WALK)
+    old.transitions = [(b, a, true_step(b, a, 2), o) for b, a, _, o in old.transitions]
+    rec = make_record(WALK)
+    rec.level, rec.previous = 1, [old]
+    wm = WM(rec)
+    register(wm)
+    assert wm.verify()["ok"]                                   # current level only by default
+    res = wm.verify(all_levels=True)
+    assert not res["ok"] and res["dynamics"]["first_divergence"]["level"] == 0

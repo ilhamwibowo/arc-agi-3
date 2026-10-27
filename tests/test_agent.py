@@ -188,7 +188,8 @@ def test_calibration_moves_ratio():
 
 def test_system_prompt_size_and_sections():
     p = prompts.build_system_prompt()
-    assert len(p) / 3.5 < 2500
+    # 2800: the WORLD_MODEL rework (worked example, return shapes) added ~400 tokens.
+    assert len(p) / 3.5 < 2800
     for needle in ("current_frame", ".grid", ".crop", "last_animation_frames", "frame_diff",
                    "UNDO", "MOUSE", "gameplay_changed", "game_over", "BFS", "free"):
         assert needle in p

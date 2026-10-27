@@ -46,7 +46,7 @@ BLOCKED_BUILTINS = frozenset({
 SAFE_BUILTIN_NAMES = frozenset(k for k in vars(builtins) if k not in BLOCKED_BUILTINS)
 PROVIDED = ("current_frame", "previous_frame", "history", "transitions", "last_transition",
             "valid_actions", "last_action_call_result", "last_animation_frames", "frame_diff",
-            "action", "result", "wm", "np")
+            "action", "result", "wm", "np", "memory")
 
 
 class AttrDict(dict):
@@ -60,6 +60,8 @@ class AttrDict(dict):
 TIMEOUT_S = 30.0
 MAX_OUTPUT_CHARS = 12_000          # ~3000 tokens
 MAX_ACTIONS_PER_CALL = 64
+DIFF_CHARS = 200                   # cap for the one-line per-action object diff
+DIFF_ITEMS = 3                     # objects detailed per diff category
 SNIPPET = "<snippet>"
 
 
@@ -172,6 +174,42 @@ def parse_action(spec) -> Action:
     raise ValueError(f"cannot parse action {spec!r}")
 
 
+def _cell(bbox) -> str:
+    return f"({bbox[0]},{bbox[1]})"
+
+
+def diff_line(before: Optional[np.ndarray], after: Optional[np.ndarray]) -> str:
+    """Compact one-line object diff of one action, e.g. 'moved: 1 (K (10,4)->(10,6)); ...'.
+
+    Every game in run 1 hand-wrote a "what moved" tracker; this gives it for free. It uses the
+    heuristic percept.frame_diff on the settled boards, so matches are best-effort.
+    """
+    if before is None or after is None:
+        return ""
+    if np.array_equal(before, after):
+        return "no change"
+    d = _percept().frame_diff(before, after)
+    fmt = {
+        "moved": lambda m: f"{m['color']} {_cell(m['from'])}->{_cell(m['to'])}",
+        "rotated": lambda m: f"{m['color']} {m['degrees']}deg at {_cell(m['from'])}",
+        "appeared": lambda m: f"{m['color']} {m['pixels']}px at {_cell(m['bbox'])}",
+        "disappeared": lambda m: f"{m['color']} {m['pixels']}px at {_cell(m['bbox'])}",
+        "changed_color": lambda m: f"{m['from']}->{m['to']} at {_cell(m['bbox'])}",
+        "resized": lambda m: f"{m['color']} {m['pixels'][0]}->{m['pixels'][1]}px at "
+                             f"{_cell(m['to'])}",
+    }
+    parts = []
+    for key, f in fmt.items():
+        items = d.get(key) or []
+        if not items and key in ("rotated", "resized"):
+            continue   # rarer categories only when present, to keep the line short
+        shown = ", ".join(f(m) for m in items[:DIFF_ITEMS])
+        more = f", +{len(items) - DIFF_ITEMS}" if len(items) > DIFF_ITEMS else ""
+        parts.append(f"{key}: {len(items)}" + (f" ({shown}{more})" if items else ""))
+    text = "; ".join(parts) + f"; cells: {d['changed_cell_count']}"
+    return text if len(text) <= DIFF_CHARS else text[:DIFF_CHARS - 3] + "..."
+
+
 def _animation_summary(before: Optional[np.ndarray], frames: list[np.ndarray]):
     """(summary dict or None, collapsed frame chain) for one action's animation."""
     if before is None or len(frames) < 2:
@@ -206,6 +244,8 @@ class PythonTool:
         self.retained: dict[str, dict] = {}   # name -> {"source": str, "imports": [str]}
         self.last_action_call_result: Optional[dict] = None
         self.last_animation_frames: list = []
+        # Plain dict that survives across calls (variables do not); the model stores plans here.
+        self.memory: dict = {}
         self._views: dict[int, TransitionView] = {}
         self._calls = 0
         self.wm = WM(record=self._wm_record, hud_border=session.config.hud_border)
@@ -262,6 +302,7 @@ class PythonTool:
         self.wm._cancel = lambda: run.cancelled
         ns["wm"] = self.wm
         ns["result"] = None
+        ns["memory"] = self.memory
         self._refresh(ns)
         return ns
 
@@ -277,7 +318,9 @@ class PythonTool:
             if rec is None:
                 rec = by_level[lv] = Record(level_start_grid=t.before.grid, level=lv)
             r = t.result
-            outcome = ("game_over" if r.game_over else
+            # A silent level reset is a death in all but name; recording it as game_over lets
+            # verify skip grading its dynamics and the planner prune it.
+            outcome = ("game_over" if r.game_over or r.level_reset else
                        "level_complete" if r.level_completed or r.run_complete else "ongoing")
             rec.transitions.append((t.before.grid, {"action": t.action.name, "row": t.action.row,
                                                     "col": t.action.col}, t.after.grid, outcome))
@@ -294,8 +337,8 @@ class PythonTool:
         if run.cancelled:
             raise TimeoutError("snippet timed out; no further actions")
         if run.terminal:
-            raise TerminalStateError("the level ended or the game is over in this snippet; "
-                                     "end the snippet and look at the new state")
+            raise TerminalStateError("the level ended, was reset, or the game is over in this "
+                                     "snippet; end the snippet and look at the new state")
         if isinstance(actions, (str, dict, Action)):
             actions = [actions]
         cfg = self.session.config
@@ -315,7 +358,8 @@ class PythonTool:
 
         summary = AttrDict({"executed": 0, "skipped": len(parsed), "stop_reason": None,
                             "level_completed": False, "game_over": False, "run_complete": False,
-                            "animation": None, "per_action": [], "frame": ns["current_frame"]})
+                            "level_reset": False, "animation": None, "per_action": [],
+                            "frame": ns["current_frame"]})
         for a in parsed:
             if run.budget <= 0:
                 summary["stop_reason"] = "max_actions_per_call"
@@ -328,16 +372,22 @@ class PythonTool:
                 run.results.append(res)  # under the lock so a timed-out call still reports it
             run.budget -= 1
             summary["skipped"] -= 1
+            if res.executed:
+                try:
+                    res.diff = diff_line(res.before, res.after)
+                except Exception as e:  # a percept bug must not break acting
+                    res.diff = f"diff unavailable ({type(e).__name__})"
             summary["per_action"].append({
                 "action": a.display(), "executed": res.executed,
                 "gameplay_changed": res.gameplay_changed, "board_changed": res.board_changed,
                 "level_completed": res.level_completed, "game_over": res.game_over,
-                "stop_reason": res.stop_reason, "message": res.message})
+                "level_reset": res.level_reset, "stop_reason": res.stop_reason,
+                "message": res.message, "diff": res.diff})
             if not res.executed:
                 summary["stop_reason"] = res.stop_reason or "refused"
                 break
             summary["executed"] += 1
-            for key in ("level_completed", "game_over", "run_complete"):
+            for key in ("level_completed", "game_over", "run_complete", "level_reset"):
                 summary[key] = summary[key] or getattr(res, key)
             self._refresh(ns)
             anim, chain = _animation_summary(res.before, res.frames)
@@ -345,10 +395,11 @@ class PythonTool:
                 summary["animation"] = anim
                 cur = ns["current_frame"]
                 self.last_animation_frames = [FrameView(g, cur.step, cur.level) for g in chain]
-            if res.level_completed or res.game_over or res.run_complete:
+            if res.level_completed or res.game_over or res.run_complete or res.level_reset:
                 run.terminal = True
                 summary["stop_reason"] = "game_over" if res.game_over else (
-                    "level_completed" if res.level_completed else "run_complete")
+                    "level_completed" if res.level_completed else
+                    "level_reset" if res.level_reset else "run_complete")
                 break
             if not res.gameplay_changed:
                 run.ineffective = True

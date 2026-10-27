@@ -114,17 +114,28 @@ class _Run:
         except Exception:
             return False
 
+    def wait_model_up(self) -> None:
+        if self.model_ready is None:
+            return
+        while not (self._model_up() or self.first_action.is_set() or self.stop.is_set()
+                   or self.clock() >= self.run_end):
+            time.sleep(5.0)
+
     def play_one(self, game_id, make_env, agent_factory, keeper: bool) -> None:
         progress = GameProgress(game_id=game_id)
-        start = self.clock()
-        deadline = self.deadline_for(start)
-        summary: dict[str, Any] = {"game_id": game_id, "keeper": keeper, "start": start,
-                                   "deadline": deadline, "status": "running"}
+        start = self.clock()                    # re-stamped once the model is up
+        summary: dict[str, Any] = {"game_id": game_id, "keeper": keeper, "status": "running"}
         env = session = None
         try:
             env = _ActionWatch(make_env(game_id), self.first_action)
             if keeper:
                 self.keep_alive(env, game_id)
+            # The per-game clock starts when the model is up: server boot (~12 min) must not eat
+            # the cap of a short dev run. In the competition the cap is the whole run anyway.
+            self.wait_model_up()
+            start = self.clock()
+            deadline = self.deadline_for(start)
+            summary.update(start=start, deadline=deadline)
             session = self.make_session(game_id, env) if self.make_session else env
             agent = agent_factory(game_id, progress)
             result = agent.play_game(session, deadline)
