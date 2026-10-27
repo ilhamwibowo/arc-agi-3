@@ -58,9 +58,10 @@ def select_subset(game_ids: list[str], subset) -> list[str]:
 
 
 def build_components(mode: str, base_url: str, env_dir: str, api_key: str, llm_url: str,
-                     model_name: str, gate: PriorityGate, log_dir: Path):
+                     model_name: str, gate: PriorityGate, log_dir: Path,
+                     agent_overrides: Optional[dict] = None):
     """Return (arena, make_session, agent_factory): the integration point with env/session/agent."""
-    from arc3.agent import Agent
+    from arc3.agent import Agent, AgentConfig
     from arc3.env import Arena
     from arc3.llm import LLMClient
     from arc3.session import GameSession
@@ -73,15 +74,22 @@ def build_components(mode: str, base_url: str, env_dir: str, api_key: str, llm_u
         return GameSession(env, GameConfig(game_id=game_id), trace_path=log_dir / game_id / "trace.jsonl")
 
     def agent_factory(game_id, progress):
-        # One client (one HTTP session) per game thread.
-        return Agent(LLMClient(base_url=llm_url, model=model_name), gate=gate, progress=progress)
+        # One client (one HTTP session) per game thread. Overrides keyed by id prefix allow A/B
+        # runs (e.g. images on/off) inside one notebook.
+        fields = {}
+        for prefix, values in (agent_overrides or {}).items():
+            if game_id.startswith(prefix):
+                fields.update(values)
+        say(f"{game_id}: agent overrides {fields}" if fields else f"{game_id}: default agent config")
+        return Agent(LLMClient(base_url=llm_url, model=model_name), AgentConfig(**fields),
+                     gate=gate, progress=progress)
     return arena, make_session, agent_factory
 
 
 def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, model_name: str,
          model_ready=None, offline_subset=None, per_game_cap_seconds: float = 9 * 3600,
          max_active: int = 10, env_dir: str = OFFLINE_ENV_DIR, gate: Optional[PriorityGate] = None,
-         abort=None):
+         abort=None, agent_overrides: Optional[dict] = None):
     mode = "competition" if competition else "offline"
     base_url = os.environ.setdefault("ARC_BASE_URL", DEFAULT_GATEWAY) if competition else ""
     api_key = os.environ.setdefault("ARC_API_KEY", DEFAULT_API_KEY) if competition else ""
@@ -92,7 +100,8 @@ def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, mo
     gate = gate or PriorityGate(max_active=max_active)
     log_path = Path(log_dir)
     arena, make_session, agent_factory = build_components(
-        mode, base_url, "" if competition else env_dir, api_key, llm_url, model_name, gate, log_path)
+        mode, base_url, "" if competition else env_dir, api_key, llm_url, model_name, gate, log_path,
+        agent_overrides=agent_overrides)
     game_ids = arena.game_ids()
     if not game_ids:
         raise RuntimeError(f"{mode} arcade exposed zero games")

@@ -52,6 +52,7 @@ HARD_WALL = NOTEBOOK_START + 9 * 3600     # Kaggle limit; the runner ends games 
 TRUE_SUBMISSION = os.environ.get("KAGGLE_IS_COMPETITION_RERUN", "").strip().lower() in {"1", "true"}
 OFFLINE_SUBSET = __OFFLINE_SUBSET__        # offline only: None=all, int=first n, or list of id prefixes
 PER_GAME_CAP_SECONDS = __PER_GAME_CAP__
+AGENT_OVERRIDES = __AGENT_OVERRIDES__      # {game-id prefix: {AgentConfig field: value}} for A/B runs
 MAX_ACTIVE = 10
 PORT = 30000
 WORKING = "/kaggle/working"
@@ -149,7 +150,8 @@ try:
         competition=TRUE_SUBMISSION, run_end_epoch=HARD_WALL, log_dir=LOG_DIR,
         llm_url=f"http://127.0.0.1:{PORT}/v1", model_name=ks.SERVED_MODEL_NAME,
         model_ready=lambda: ks.healthy(PORT), offline_subset=OFFLINE_SUBSET,
-        per_game_cap_seconds=PER_GAME_CAP_SECONDS, gate=GATE, abort=SERVER_DEAD)
+        per_game_cap_seconds=PER_GAME_CAP_SECONDS, gate=GATE, abort=SERVER_DEAD,
+        agent_overrides=AGENT_OVERRIDES)
 except BaseException:
     RUN_ERROR = traceback.format_exc()
     print("!!! RUN FAILED !!!\\n" + RUN_ERROR, flush=True)
@@ -185,9 +187,11 @@ def _markdown(src: str) -> dict:
     return {"cell_type": "markdown", "metadata": {}, "source": src}
 
 
-def build_notebook(offline_subset=3, per_game_cap_seconds: float = 9 * 3600) -> dict:
+def build_notebook(offline_subset=3, per_game_cap_seconds: float = 9 * 3600,
+                   agent_overrides: dict | None = None) -> dict:
     tar_b64, tar_sha = source_tar_b64()
     subs = {"__OFFLINE_SUBSET__": repr(offline_subset), "__PER_GAME_CAP__": repr(per_game_cap_seconds),
+            "__AGENT_OVERRIDES__": repr(agent_overrides or {}),
             "__BUILD_ID__": tar_sha[:12], "__TAR_B64__": tar_b64, "__TAR_SHA__": tar_sha}
 
     def fill(src: str) -> str:
@@ -235,10 +239,13 @@ def main() -> None:
     ap.add_argument("--offline-subset", default="3",
                     help="offline game subset: 'all', a count, or comma-separated id prefixes")
     ap.add_argument("--per-game-cap-hours", type=float, default=9.0)
+    ap.add_argument("--agent-overrides", default="{}",
+                    help='JSON {"prefix": {"send_images": false}} applied to matching games')
     args = ap.parse_args()
     subset = args.offline_subset
     subset = None if subset == "all" else int(subset) if subset.isdigit() else subset.split(",")
-    out = build(args.name, offline_subset=subset, per_game_cap_seconds=args.per_game_cap_hours * 3600)
+    out = build(args.name, offline_subset=subset, per_game_cap_seconds=args.per_game_cap_hours * 3600,
+                agent_overrides=json.loads(args.agent_overrides))
     print(f"wrote {out}")
 
 

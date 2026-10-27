@@ -29,3 +29,12 @@
   prompt rework, verify current level by default) delegated.
 - 08:50 Run #3 pushed: `wibowoilham/arc3-dev9b` v1 — same 9 games/cap as run #2, with all review fixes (commit 86c38b6). Record: runs/kaggle/arc3-dev9b/1.
 - 08:10 Cancelled run #2 (deleted queued kernel arc3-dev9): old-code baseline not worth 3 h of GPU; run #1 + dfranzen table serve as reference. Run #3 (dev9b) running since 07:53.
+
+## 2026-10-27 10:50 WIB — run #3 result (runs/kaggle/arc3-dev9b/1)
+- 9 games, 2.5 h cap, 9 concurrent: 49/70 levels, mean RHAE 0.551 (dfranzen full-budget reference on the
+  same 9 games: 0.448). Full wins sb26, tu93, vc33; levels ≥ reference on 8/9 (bp35 4 vs 1.0, wa30 4 vs 1.2,
+  ls20 5 vs 4.0). 0 errors; trims 1–8/game (max prompt 120.7k, mean 72k); ~51 s/call at 9 concurrent.
+- Boot: SGLang READY at 1741 s (model prefetch 1455 s vs 475 s in run #1 — Kaggle disk variance).
+- NOT fixed: after-action calls still cache 11 % (images_window=1 did not help); yield/in-turn 93–94 %.
+  wm tools used 0/1233 calls (reworked prompt made usage worse, not better). level_reset never fired.
+- Next: run #4 = images A/B (4 games with images, 4 text-only, 1 h cap) to settle the cache question.
