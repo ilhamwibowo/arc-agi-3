@@ -132,3 +132,8 @@
 ### 2026-10-28 08:50 Submission sub-001 (user-approved: "build the notebook and submit")
 - Notebook `arc3-submission` v1 built from HEAD 8011bc7 (run #10 config), smoke-saved with offline subset 1 game / 3 min cap (18 min of GPU: boot + 1 game, 2 levels, no errors).
 - Submitted via CLI: `kaggle competitions submit -k wibowoilham/arc3-submission -v 1 -f submission.parquet`. Submission ref 57718940, PENDING at 01:18 UTC. 0 submissions remaining today. Rerun: 110 hidden games, 9 h.
+
+### 2026-10-28 09:30 sub-001 scored 0.00 (COMPLETE ~35 min after submission) — early exit, no rerun logs
+- Leaderboard research: unchanged dfranzen M2 notebook scores 25–34 in healthy reruns (best public fork 35.35); the team's 22.23 and the many 0.00s this week are a Kaggle platform incident (slow dataset cache, gateway DNS failures, scorecards closing). Top 5 = 50–75 with private harnesses; the 36–39 cluster merges the three M2 winners' published tricks (host-tier KV pool 1.4M tokens / 14–16 streams, solved-level memory pinning, UCB time scheduler, 950–1150 tok/s decode).
+- Our competition path matches the official sample (gateway:8001, test-key-123, /api/games wait); the teammate harness validated the same path on Oct 26. Likeliest early-exit causes: (a) gateway not up within our 600 s wait → RuntimeError → run ends; (b) SGLang died at boot on the rerun host (slow reads / memory) → SERVER_DEAD aborted the run.
+- Hardening for sub-002 (all committed): gateway wait bounded by the run (run_end − 1 h) instead of 10 min; SGLang install+launch retried up to 3× with MEMFRAC 0.96 → 0.94 → 0.92, only the third failure aborts, and a server that dies mid-run is relaunched; agent max_llm_failures 10 → 180 so games survive a 30 min relaunch. Tests 147 green.

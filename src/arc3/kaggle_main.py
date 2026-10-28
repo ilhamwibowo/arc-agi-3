@@ -123,7 +123,8 @@ def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, mo
     base_url = os.environ.setdefault("ARC_BASE_URL", DEFAULT_GATEWAY) if competition else ""
     api_key = os.environ.setdefault("ARC_API_KEY", DEFAULT_API_KEY) if competition else ""
     if competition:
-        wait_for_gateway(base_url)
+        # Wait as long as the run allows minus an hour of play: a run that gives up scores 0.
+        wait_for_gateway(base_url, timeout=max(600.0, run_end_epoch - time.time() - 3600))
     elif not Path(env_dir).is_dir():
         raise RuntimeError(f"offline environment dir missing: {env_dir}")
     gate = gate or PriorityGate(max_active=max_active)

@@ -112,23 +112,36 @@ CELL_SERVE = '''\
 SERVER = {"proc": None, "error": None}
 SERVER_DEAD = threading.Event()
 
+RELAUNCH_MEMFRAC = [None, {"MEMFRAC": 0.94}, {"MEMFRAC": 0.92}]   # attempt 1 stock, then smaller pools
+
 def _launch():
-    try:
-        ks.prefetch(ks.WHEELHOUSE_DIR, threads=16)    # the offline install reads all of it
-        SERVER["proc"] = ks.launch_sglang(SERVE_LOG, port=PORT)
-        ready_at = None
-        while True:              # watchdog: a dead server ends the run instead of idling for hours
-            if SERVER["proc"].poll() is not None:
-                raise RuntimeError(f"SGLang exited with code {SERVER['proc'].returncode}")
-            if ready_at is None and ks.healthy(PORT):
-                ready_at = time.time()
-                ks.say(f"SGLang READY {ready_at - NOTEBOOK_START:.0f}s after notebook start")
-            time.sleep(10)
-    except Exception:
-        SERVER["error"] = traceback.format_exc()
-        ks.say("!!! SGLANG FAILED !!!\\n" + SERVER["error"] + "\\n--- serve.log tail ---\\n"
-               + ks.log_tail(SERVE_LOG))
-        SERVER_DEAD.set()
+    # sub-001 (2026-10-28) scored 0.00 after ~35 min: a server that dies at boot must not end the run.
+    # Retry the whole install+launch up to 3 times (the keeper holds the scorecard meanwhile); only a
+    # third failure aborts. A server that dies after being ready is relaunched the same way.
+    attempt = 0
+    while True:
+        try:
+            ks.prefetch(ks.WHEELHOUSE_DIR, threads=16)    # the offline install reads all of it
+            SERVER["proc"] = ks.launch_sglang(SERVE_LOG, port=PORT, overrides=RELAUNCH_MEMFRAC[attempt])
+            ready_at = None
+            while True:          # watchdog: a dead server is relaunched instead of idling for hours
+                if SERVER["proc"].poll() is not None:
+                    raise RuntimeError(f"SGLang exited with code {SERVER['proc'].returncode}")
+                if ready_at is None and ks.healthy(PORT):
+                    ready_at = time.time()
+                    ks.say(f"SGLang READY {ready_at - NOTEBOOK_START:.0f}s after notebook start (attempt {attempt + 1})")
+                time.sleep(10)
+        except Exception:
+            SERVER["error"] = traceback.format_exc()
+            ks.say(f"!!! SGLANG FAILED (attempt {attempt + 1}) !!!\\n" + SERVER["error"]
+                   + "\\n--- serve.log tail ---\\n" + ks.log_tail(SERVE_LOG))
+            ks.stop_server(SERVER.get("proc"))
+            attempt += 1
+            if attempt >= len(RELAUNCH_MEMFRAC) or time.time() > HARD_WALL - 3600:
+                SERVER_DEAD.set()
+                return
+            SERVER["error"] = None
+            time.sleep(30)
 
 SERVER_THREAD = threading.Thread(target=_launch, name="sglang", daemon=True)
 SERVER_THREAD.start()

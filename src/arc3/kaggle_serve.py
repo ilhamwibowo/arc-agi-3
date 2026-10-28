@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Optional
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -213,8 +214,8 @@ def _sha256(path: Path) -> str:
 
 
 def server_args(venv: Path, model_dir: str, draft_view: Path, token_map: Path,
-                port: int = PORT) -> list[str]:
-    c = CFG
+                port: int = PORT, overrides: Optional[dict] = None) -> list[str]:
+    c = {**CFG, **(overrides or {})}
     args = [str(venv / "bin/sglang"), "serve", "--model-path", model_dir, "--load-format", "safetensors",
             "--model-loader-extra-config", '{"enable_multithread_load":false}',
             "--served-model-name", SERVED_MODEL_NAME, "--host", "127.0.0.1", "--port", str(port),
@@ -264,9 +265,10 @@ def _unlimit_address_space() -> None:
 
 def launch_sglang(log_path: str, port: int = PORT, model_dir: str = MODEL_DIR,
                   draft_dir: str = DRAFT_MODEL_DIR, wheelhouse: str = WHEELHOUSE_DIR,
-                  prefix: str = PREFIX) -> subprocess.Popen:
+                  prefix: str = PREFIX, overrides: Optional[dict] = None) -> subprocess.Popen:
     """Install (offline) and start the server detached; returns immediately. Raises loudly on any
-    missing input so a broken mount is visible in the notebook log rather than as a hang."""
+    missing input so a broken mount is visible in the notebook log rather than as a hang.
+    `overrides` patches CFG for this launch (relaunch attempts lower MEMFRAC)."""
     for label, path in (("model", model_dir), ("draft", draft_dir), ("wheelhouse", wheelhouse)):
         if not Path(path).is_dir():
             raise RuntimeError(f"{label} directory missing: {path} (check kernel-metadata sources)")
@@ -281,7 +283,8 @@ def launch_sglang(log_path: str, port: int = PORT, model_dir: str = MODEL_DIR,
     token_map = _find_one(wheelhouse, "hot_tokens_64k.pt")
     if _sha256(token_map) != TOKEN_MAP_SHA or _sha256(target / "tokenizer.json") != TOKENIZER_SHA:
         raise RuntimeError("FR-Spec token map or tokenizer hash mismatch with the pinned bundle")
-    args = server_args(venv, model_dir, _draft_view(target, Path(draft_dir), prefix), token_map, port)
+    args = server_args(venv, model_dir, _draft_view(target, Path(draft_dir), prefix), token_map, port,
+                       overrides=overrides)
     say("launching SGLang: " + shlex.join(args))
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "ab", buffering=0) as logf:
