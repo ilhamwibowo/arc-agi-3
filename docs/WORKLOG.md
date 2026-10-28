@@ -122,3 +122,9 @@
 - Throughput fixed: 829 tok/s mean, graphs captured at bs 11-12, 4961 calls at 25.7 s, KV 68 % mean / 85 % max, slot wait 1742 min. But 98/183 levels, mean 0.377 (run #7 113/0.476 with fewer calls). Wins tu93 9/9, vc33 7/7, m0r0, lp85, tr87, ft09, cd82 (slow: 431 actions → 0.226).
 - Two causes visible in traces: (1) context 80k/drain 30k → 309 trims vs 154, model re-explores after each trim (10753 actions vs 9157 for fewer levels); (2) idle guard released the slot at the notice threshold 169 times; each release re-waited for a slot (≈364 min total, tr87 95 min, g50t 52 min, re86 40 min) and dropped the warm prefix, mostly on legitimate analysis turns.
 - Run #10 (arc3-full25f): back to run #6/#7 serving config (10 slots, 116k/58k context; GRAPH_BS keeps 11-12, harmless), idle notice stays but no slot release until the park at 8 idle turns. Expected ≈ run #7. Quota after run #10 ≈ 28.8/30 h → last run this week.
+
+### 2026-10-28 08:05 Run #10 result (arc3-full25f v1: 10 slots, 116k/58k context, idle notice w/o release, park at 8)
+- **118/183 levels, mean 0.510 — best so far** (run #6 114/0.500, run #7 113/0.476, run #9 98/0.377). 8 full wins: ar25 cd82 ft09 lp85 m0r0 sb26 tr87 tu93. No errors; 766 tok/s, KV 75 % mean / 99 % max, 4811 calls at 22.2 s, 95 % cache, 155 trims, 2 idle parks, slot wait 1989 min.
+- Confirms run #9's diagnosis: the 80k context and the slot release at the idle notice were the regressions; the idle guard as a pure prompt notice + late park is harmless (sb26 8/8 again, tu93 9/9).
+- Weak spots unchanged: sk48 1/8, sp80 1/6, lf52 2/10, s5i5 2/8, wa30 3/9, vc33 3/7 (vc33 was 7/7 in run #9: high variance). Slot wait still ~55 % of wall.
+- Weekly Kaggle GPU quota exhausted (~29/30 h). Next: this config is the submission candidate; ask the user for the first competition submission (dress rehearsal).
