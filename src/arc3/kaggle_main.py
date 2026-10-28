@@ -28,8 +28,9 @@ def say(msg: str) -> None:
     print(f"[arc3 {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def wait_for_gateway(base_url: str, timeout: float = 600.0) -> None:
-    """Poll <base>/api/games until it answers (<500) or fail loudly."""
+def wait_for_gateway(base_url: str, timeout: float = 2400.0) -> None:
+    """Poll <base>/api/games until it answers (<500) or fail loudly. 40 min: the Oct 2026 platform
+    incident had gateway DNS failing for >10 min while weights loaded; a run that gives up scores 0."""
     url = base_url.rstrip("/") + "/api/games"
     end = time.time() + timeout
     last = ""
