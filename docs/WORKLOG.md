@@ -128,3 +128,7 @@
 - Confirms run #9's diagnosis: the 80k context and the slot release at the idle notice were the regressions; the idle guard as a pure prompt notice + late park is harmless (sb26 8/8 again, tu93 9/9).
 - Weak spots unchanged: sk48 1/8, sp80 1/6, lf52 2/10, s5i5 2/8, wa30 3/9, vc33 3/7 (vc33 was 7/7 in run #9: high variance). Slot wait still ~55 % of wall.
 - Weekly Kaggle GPU quota exhausted (~29/30 h). Next: this config is the submission candidate; ask the user for the first competition submission (dress rehearsal).
+
+### 2026-10-28 08:50 Submission sub-001 (user-approved: "build the notebook and submit")
+- Notebook `arc3-submission` v1 built from HEAD 8011bc7 (run #10 config), smoke-saved with offline subset 1 game / 3 min cap (18 min of GPU: boot + 1 game, 2 levels, no errors).
+- Submitted via CLI: `kaggle competitions submit -k wibowoilham/arc3-submission -v 1 -f submission.parquet`. Submission ref 57718940, PENDING at 01:18 UTC. 0 submissions remaining today. Rerun: 110 hidden games, 9 h.
