@@ -227,3 +227,25 @@ def test_idle_watchdog_resets_when_no_game_touches_the_gateway(tmp_path):
     assert summary["ok"] == 2
     watchdog = [e for e in log if e[1] == "RESET" and e[2] > min(x[2] for x in log if x[1] == "UP")]
     assert watchdog and all(e[0] == "fresh" for e in watchdog), log
+
+
+def test_keeper_passes_to_first_game_with_a_working_env(tmp_path):
+    """If the first game's make fails, another game must keep the scorecard alive."""
+    log = []
+    gate = PriorityGate()
+    go = threading.Event()
+
+    def make_env(gid):
+        if gid == "broken":
+            raise RuntimeError("gateway stalled")
+        return FakeEnv(gid, log)
+
+    def factory(gid, progress):
+        return FakeAgent(gid, progress, gate, wait_for=go)
+    threading.Timer(0.3, go.set).start()
+    summary = run_games(["broken", "second"], make_env, factory, gate, total_seconds=3600,
+                        per_game_cap_seconds=600, log_dir=tmp_path, keepalive_seconds=0.1,
+                        model_ready=go.is_set)   # the keeper's own agent cannot act until the model is up
+    assert summary["errors"] == 1 and summary["ok"] == 1
+    resets = [e for e in log if e[1] == "RESET"]
+    assert resets and all(e[0] == "second" for e in resets)

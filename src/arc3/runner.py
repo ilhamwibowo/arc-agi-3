@@ -88,6 +88,7 @@ class _Run:
         self.stop = threading.Event()           # set when the run is over; ends the keep-alive loop
         self.keepalive_resets = 0
         self.last_activity = run_start          # last gateway step by any game (idle watchdog)
+        self.keeper_claimed = False             # first game with a working env keeps the card alive
         self.envs: dict[str, Any] = {}          # live game envs (unwrapped), for the idle watchdog
         self.summaries: dict[str, dict] = {}
         self.lock = threading.Lock()
@@ -158,6 +159,9 @@ class _Run:
         try:
             env = _ActionWatch(make_env(game_id), self.first_action, self)
             self.envs[game_id] = env._env
+            with self.lock:   # a keeper whose make failed must not leave the card un-RESET
+                keeper, self.keeper_claimed = (not self.keeper_claimed), True
+            summary["keeper"] = keeper
             if keeper:
                 self.keep_alive(env, game_id)
             # The per-game clock starts when the model is up: server boot (~12 min) must not eat

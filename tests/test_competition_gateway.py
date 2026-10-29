@@ -142,3 +142,34 @@ def test_main_retries_when_arcade_lists_zero_games(tmp_path, monkeypatch):
     s = kaggle_main.main(competition=False, run_end_epoch=time.time() + 9 * 3600,
                          log_dir=str(tmp_path), llm_url="x", model_name="x", env_dir=str(ENV_DIR))
     assert calls["n"] == 3 and s["ids"] == ["aa00-1"]
+
+
+def test_main_competition_ignores_agent_overrides(gateway, tmp_path, monkeypatch):
+    from arc3 import kaggle_main
+    base, _ = gateway
+    monkeypatch.setenv("ARC_BASE_URL", base)
+    monkeypatch.setenv("ARC_API_KEY", "test-key-123")
+    seen = {}
+    real = kaggle_main.build_components
+
+    def spy(*a, **kw):
+        seen["overrides"] = kw.get("agent_overrides")
+        return real(*a, **kw)
+    monkeypatch.setattr(kaggle_main, "build_components", spy)
+    monkeypatch.setattr(kaggle_main, "cap_address_space", lambda: None)
+    monkeypatch.setattr(kaggle_main, "run_games",
+                        lambda *a, **kw: {"ok": 0, "errors": 0, "hung": [], "levels_completed": 0})
+    kaggle_main.main(competition=True, run_end_epoch=time.time() + 9 * 3600, log_dir=str(tmp_path),
+                     llm_url="http://127.0.0.1:1/v1", model_name="x",
+                     agent_overrides={"": {"send_images": True}})
+    assert seen["overrides"] is None
+
+
+def test_wait_for_gateway_accepts_4xx(monkeypatch):
+    import urllib.error
+    from arc3 import kaggle_main
+
+    def raise_404(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+    monkeypatch.setattr(kaggle_main.urllib.request, "urlopen", raise_404)
+    kaggle_main.wait_for_gateway("http://127.0.0.1:1/", timeout=5)

@@ -44,6 +44,7 @@ from .types import ENGINE_TO_MODEL, Action, GameState, Observation
 # Gateway hiccup tolerance (competition runs talk HTTP to a gateway that can stall for minutes).
 MAKE_ATTEMPTS = 40          # ~10 min at RETRY_SLEEP
 STEP_ATTEMPTS = 24          # ~6 min
+CLOSE_ATTEMPTS = 20         # ~5 min: the run margin is 13 min after games end
 RETRY_SLEEP = 15.0
 
 log = logging.getLogger("arc3.env")
@@ -131,7 +132,19 @@ class Arena:
         """Open the (single) scorecard if none is open; return its id."""
         with self._lock:  # many game threads call make() at once; open exactly one card
             if self.scorecard_id is None:
-                self.scorecard_id = self.arcade.open_scorecard(tags=tags or ["arc3"])
+                last: Optional[BaseException] = None
+                for attempt in range(1, MAKE_ATTEMPTS + 1):
+                    try:
+                        self.scorecard_id = self.arcade.open_scorecard(tags=tags or ["arc3"])
+                        break
+                    except Exception as exc:        # one 10 s gateway stall must not end the run
+                        last = exc
+                        log.warning("open_scorecard failed (attempt %d/%d): %r", attempt,
+                                    MAKE_ATTEMPTS, exc)
+                        if attempt < MAKE_ATTEMPTS:
+                            time.sleep(RETRY_SLEEP)
+                if self.scorecard_id is None:
+                    raise RuntimeError(f"could not open the scorecard: {last!r}")
             return self.scorecard_id
 
     def close_scorecard(self) -> Optional[dict]:
@@ -140,7 +153,15 @@ class Arena:
             card_id, self.scorecard_id = self.scorecard_id, None
         if card_id is None:
             return None
-        card = self.arcade.close_scorecard(card_id)
+        card = None
+        for attempt in range(1, CLOSE_ATTEMPTS + 1):
+            try:
+                card = self.arcade.close_scorecard(card_id)
+                break
+            except Exception as exc:   # the close is what gets scored: retry within the margin
+                log.warning("close_scorecard failed (attempt %d/%d): %r", attempt, CLOSE_ATTEMPTS, exc)
+                if attempt < CLOSE_ATTEMPTS:
+                    time.sleep(RETRY_SLEEP)
         if card is None:
             return None
         data = card.model_dump(mode="json")
@@ -148,14 +169,29 @@ class Arena:
         return data
 
     def make(self, game_id: str, seed: int = 0, safe_reset: bool = True,
-             attempts: int = MAKE_ATTEMPTS, retry_sleep: float = RETRY_SLEEP) -> "Env":
+             attempts: Optional[int] = None, retry_sleep: float = RETRY_SLEEP) -> "Env":
         """Create the game. The toolkit swallows HTTP errors (10 s timeout, 5xx, DNS) and returns
-        None; in a 9 h competition run one blip must not lose a game, so retry for ~10 min."""
+        None; in a 9 h competition run one blip must not lose a game, so retry for ~10 min.
+        Offline, None is deterministic (bad id, engine error): no retries there."""
+        if attempts is None:
+            attempts = MAKE_ATTEMPTS if self.competition else 1
         card = self.open_scorecard()
         for attempt in range(1, attempts + 1):
             wrapper = self.arcade.make(game_id, seed=seed, scorecard_id=card)
+            if wrapper is not None and getattr(wrapper, "observation_space", True) is None:
+                # Remote wrapper whose constructor RESET failed: every later step returns None.
+                for _ in range(STEP_ATTEMPTS):
+                    time.sleep(retry_sleep)
+                    if wrapper.reset() is not None:
+                        break
+                if wrapper.observation_space is None:
+                    log.warning("game %s: initial RESET never answered", game_id)
+                    wrapper = None
             if wrapper is not None:
-                return Env(wrapper, game_id, safe_reset=safe_reset)
+                env = Env(wrapper, game_id, safe_reset=safe_reset)
+                if self.competition:            # a local engine error is not a network blip
+                    env.step_attempts = STEP_ATTEMPTS
+                return env
             log.warning("toolkit could not create game %s (attempt %d/%d)", game_id, attempt, attempts)
             if attempt < attempts:
                 time.sleep(retry_sleep)
@@ -165,7 +201,7 @@ class Arena:
 class Env:
     """One game. `reset()` / `step(action)` return Observations with every animation frame."""
 
-    step_attempts = STEP_ATTEMPTS
+    step_attempts = 1                   # Arena.make raises this to STEP_ATTEMPTS in competition mode
     step_retry_sleep = RETRY_SLEEP
 
     def __init__(self, wrapper, game_id: str, safe_reset: bool = True):

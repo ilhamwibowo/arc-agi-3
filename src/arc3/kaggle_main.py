@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -36,10 +37,16 @@ def wait_for_gateway(base_url: str, timeout: float = 2400.0) -> None:
     last = ""
     while time.time() < end:
         try:
-            with urllib.request.urlopen(url, timeout=10) as r:
+            req = urllib.request.Request(url, headers={"X-API-Key": DEFAULT_API_KEY})
+            with urllib.request.urlopen(req, timeout=10) as r:
                 if r.status < 500:
                     say(f"gateway up: {url}")
                     return
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:            # answered (e.g. 401/404): the gateway process is up
+                say(f"gateway up: {url} (HTTP {exc.code})")
+                return
+            last = repr(exc)
         except Exception as exc:
             last = repr(exc)
         time.sleep(5)
@@ -92,12 +99,14 @@ def cap_address_space(gb: Optional[float] = None) -> Optional[float]:
     runaway snippet gets MemoryError instead of the host OOM killer taking down the model server.
     The server is a child process launched after this and would inherit the cap, so
     kaggle_serve.launch_sglang resets RLIMIT_AS in the child before exec. Linux only;
-    ARC3_AS_CAP_GB overrides the default of 40 GB, 0 disables. Returns the cap applied in GB."""
+    ARC3_AS_CAP_GB overrides the default of 120 GB, 0 disables. Returns the cap applied in GB."""
     import sys
     if not sys.platform.startswith("linux"):
         return None
     if gb is None:
-        gb = float(os.environ.get("ARC3_AS_CAP_GB", "40"))
+        # 120 GB: 110 sessions x 8.5 h of history (25 games/3 h grew ~4 GB); the host has 177 GB
+        # and the model server is a separate process outside this cap.
+        gb = float(os.environ.get("ARC3_AS_CAP_GB", "120"))
     if gb <= 0:
         return None
     try:
@@ -122,6 +131,9 @@ def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, mo
     cap_address_space()
     base_url = os.environ.setdefault("ARC_BASE_URL", DEFAULT_GATEWAY) if competition else ""
     api_key = os.environ.setdefault("ARC_API_KEY", DEFAULT_API_KEY) if competition else ""
+    if competition and agent_overrides:
+        say(f"competition: ignoring agent_overrides={agent_overrides} (A/B smoke value)")
+        agent_overrides = None
     if competition:
         # Wait as long as the run allows minus an hour of play: a run that gives up scores 0.
         wait_for_gateway(base_url, timeout=max(600.0, run_end_epoch - time.time() - 3600))

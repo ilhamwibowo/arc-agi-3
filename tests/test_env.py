@@ -182,6 +182,7 @@ class FlakyWrapper(FakeWrapper):
 def test_step_retries_toolkit_failures(monkeypatch):
     env = Env(FlakyWrapper(fail_first=2), "fake-0")
     env.step_retry_sleep = 0.0
+    env.step_attempts = 24
     obs = env.step(Action("UP"))
     assert obs.state == GameState.NOT_FINISHED
     assert [c[1] for c in env._wrapper.calls] == ["FAILED", "FAILED", {}]
@@ -206,8 +207,44 @@ def test_arena_make_retries_none(tmp_path, monkeypatch):
         calls["n"] += 1
         return None if calls["n"] < 3 else real(*a, **kw)
     monkeypatch.setattr(arena.arcade, "make", flaky)
-    env = arena.make(arena.game_ids()[0], retry_sleep=0.0)
+    env = arena.make(arena.game_ids()[0], attempts=5, retry_sleep=0.0)
     assert calls["n"] == 3 and env.reset().state == GameState.NOT_FINISHED
     monkeypatch.setattr(arena.arcade, "make", lambda *a, **kw: None)
     with pytest.raises(RuntimeError, match="after 2 attempts"):
         arena.make(arena.game_ids()[0], attempts=2, retry_sleep=0.0)
+
+
+def test_scorecard_open_and_close_retry(tmp_path, monkeypatch):
+    from arc3 import env as envmod
+    from arc3.env import Arena
+    monkeypatch.setattr(envmod, "RETRY_SLEEP", 0.0)
+    arena = Arena.offline(Path("data/environments"), recordings_dir=tmp_path)
+    n = {"open": 0, "close": 0}
+    real_open, real_close = arena.arcade.open_scorecard, arena.arcade.close_scorecard
+
+    def flaky_open(**kw):
+        n["open"] += 1
+        if n["open"] < 3:
+            raise ConnectionError("gateway stalled")
+        return real_open(**kw)
+
+    def flaky_close(card_id):
+        n["close"] += 1
+        if n["close"] < 3:
+            raise ConnectionError("gateway stalled")
+        return real_close(card_id)
+    monkeypatch.setattr(arena.arcade, "open_scorecard", flaky_open)
+    monkeypatch.setattr(arena.arcade, "close_scorecard", flaky_close)
+    card = arena.open_scorecard()
+    assert card and n["open"] == 3
+    assert arena.close_scorecard() is not None and n["close"] == 3
+
+
+def test_competition_arena_env_gets_retries(tmp_path):
+    from arc3.env import STEP_ATTEMPTS, Arena
+    assert Env(FakeWrapper(), "x").step_attempts == 1          # offline default: fail fast
+    arena = Arena.offline(Path("data/environments"), recordings_dir=tmp_path)
+    assert arena.make(arena.game_ids()[0]).step_attempts == 1
+    arena.competition = True                                    # what the gateway path sets
+    arena.arcade.make = lambda *a, **kw: FakeWrapper()
+    assert arena.make("fake-0").step_attempts == STEP_ATTEMPTS

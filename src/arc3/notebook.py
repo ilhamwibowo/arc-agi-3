@@ -111,6 +111,7 @@ CELL_SERVE = '''\
 # 4. Launch SGLang in the background (install + start); games start right away (keeper RESETs)
 SERVER = {"proc": None, "error": None}
 SERVER_DEAD = threading.Event()
+STOPPING = threading.Event()      # set by the last cell: no relaunch after the final stop
 
 RELAUNCH_MEMFRAC = [None, {"MEMFRAC": 0.94}, {"MEMFRAC": 0.92}]   # attempt 1 stock, then smaller pools
 
@@ -125,6 +126,8 @@ def _launch():
             SERVER["proc"] = ks.launch_sglang(SERVE_LOG, port=PORT, overrides=RELAUNCH_MEMFRAC[attempt])
             ready_at = None
             while True:          # watchdog: a dead server is relaunched instead of idling for hours
+                if STOPPING.is_set():
+                    return
                 if SERVER["proc"].poll() is not None:
                     raise RuntimeError(f"SGLang exited with code {SERVER['proc'].returncode}")
                 if ready_at is None and ks.healthy(PORT):
@@ -178,6 +181,7 @@ if not TRUE_SUBMISSION:
 
 CELL_TEARDOWN = '''\
 # 8. Always stop the server, then surface failures
+STOPPING.set()
 ks.stop_server(SERVER.get("proc"))
 print(ks.system_line())
 if SERVER.get("error") or RUN_ERROR:
