@@ -48,7 +48,7 @@ CELL_SETUP = '''\
 # 0. Mode, budget, configuration
 import os, sys, time, threading, traceback
 NOTEBOOK_START = time.time()
-HARD_WALL = NOTEBOOK_START + 9 * 3600     # Kaggle limit; the runner ends games 15 min earlier
+HARD_WALL = NOTEBOOK_START + 9 * 3600 - 300   # Kaggle limit minus container start-up; games end 15 min earlier
 TRUE_SUBMISSION = os.environ.get("KAGGLE_IS_COMPETITION_RERUN", "").strip().lower() in {"1", "true"}
 OFFLINE_SUBSET = __OFFLINE_SUBSET__        # offline only: None=all, int=first n, or list of id prefixes
 PER_GAME_CAP_SECONDS = __PER_GAME_CAP__

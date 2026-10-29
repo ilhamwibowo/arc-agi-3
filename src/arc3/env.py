@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,11 @@ from arc_agi import Arcade, OperationMode
 from arcengine import GameAction
 
 from .types import ENGINE_TO_MODEL, Action, GameState, Observation
+
+# Gateway hiccup tolerance (competition runs talk HTTP to a gateway that can stall for minutes).
+MAKE_ATTEMPTS = 40          # ~10 min at RETRY_SLEEP
+STEP_ATTEMPTS = 24          # ~6 min
+RETRY_SLEEP = 15.0
 
 log = logging.getLogger("arc3.env")
 
@@ -141,16 +147,26 @@ class Arena:
         data.pop("api_key", None)
         return data
 
-    def make(self, game_id: str, seed: int = 0, safe_reset: bool = True) -> "Env":
+    def make(self, game_id: str, seed: int = 0, safe_reset: bool = True,
+             attempts: int = MAKE_ATTEMPTS, retry_sleep: float = RETRY_SLEEP) -> "Env":
+        """Create the game. The toolkit swallows HTTP errors (10 s timeout, 5xx, DNS) and returns
+        None; in a 9 h competition run one blip must not lose a game, so retry for ~10 min."""
         card = self.open_scorecard()
-        wrapper = self.arcade.make(game_id, seed=seed, scorecard_id=card)
-        if wrapper is None:
-            raise RuntimeError(f"toolkit could not create game {game_id}")
-        return Env(wrapper, game_id, safe_reset=safe_reset)
+        for attempt in range(1, attempts + 1):
+            wrapper = self.arcade.make(game_id, seed=seed, scorecard_id=card)
+            if wrapper is not None:
+                return Env(wrapper, game_id, safe_reset=safe_reset)
+            log.warning("toolkit could not create game %s (attempt %d/%d)", game_id, attempt, attempts)
+            if attempt < attempts:
+                time.sleep(retry_sleep)
+        raise RuntimeError(f"toolkit could not create game {game_id} after {attempts} attempts")
 
 
 class Env:
     """One game. `reset()` / `step(action)` return Observations with every animation frame."""
+
+    step_attempts = STEP_ATTEMPTS
+    step_retry_sleep = RETRY_SLEEP
 
     def __init__(self, wrapper, game_id: str, safe_reset: bool = True):
         self._wrapper = wrapper
@@ -221,12 +237,27 @@ class Env:
                 log.warning("%s: refused RESET that would wipe %d completed levels",
                             self.game_id, self.levels_completed)
                 return self._last
-            raw = self._wrapper.step(GameAction.RESET)
+            engine_action, data = GameAction.RESET, None
         else:
-            raw = self._wrapper.step(GameAction[action.engine_name()], data=self._data(action))
+            engine_action, data = GameAction[action.engine_name()], self._data(action)
+        raw = None
+        for attempt in range(1, self.step_attempts + 1):
+            # The toolkit returns None on any HTTP failure (10 s timeout, 5xx, connection reset).
+            # Retrying the same action is safe: a failed request never reached the engine, and a
+            # request that reached it but timed out on the reply is at worst one duplicate move.
+            raw = (self._wrapper.step(GameAction.RESET) if engine_action is GameAction.RESET
+                   else self._wrapper.step(engine_action, data=data))
+            if raw is not None:
+                break
+            log.warning("%s: toolkit step failed for %s (attempt %d/%d)", self.game_id,
+                        action.display(), attempt, self.step_attempts)
+            if attempt < self.step_attempts:
+                time.sleep(self.step_retry_sleep)
+        if action.name != "RESET":
             self.steps += 1
         if raw is None:
-            raise RuntimeError(f"{self.game_id}: toolkit step failed for {action.display()}")
+            raise RuntimeError(f"{self.game_id}: toolkit step failed for {action.display()} "
+                               f"after {self.step_attempts} attempts")
         obs = self._convert(raw, previous=self._last)
         self._track_level(action, obs)
         self._last = obs

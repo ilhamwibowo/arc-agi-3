@@ -63,8 +63,10 @@ class AgentConfig:
     idle_turns_notice: int = 3    # consecutive turns with no executed action → opener notice
     idle_turns_sleep: int = 8     # ... → release the slot and park for idle_sleep_seconds (run #6 sb26: 130 idle turns)
     idle_sleep_seconds: float = 600.0
-    max_llm_failures: int = 180         # consecutive failed model calls before giving up (30 min at
-                                        # retry_sleep: the notebook relaunches a dead server)
+    max_llm_failures: int = 100_000     # consecutive failed model calls before giving up. In the
+                                        # competition a server relaunch can take 60 min; a game that
+                                        # gives up scores nothing, so keep retrying until the deadline
+                                        # (the runner's abort ends a run whose server never returns).
     retry_sleep: float = 10.0
     llm_timeout: float = 900.0
     max_actions: Optional[int] = None   # overrides session.config.max_actions when set

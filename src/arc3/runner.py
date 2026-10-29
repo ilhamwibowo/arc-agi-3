@@ -31,19 +31,24 @@ log = logging.getLogger("arc3.runner")
 
 RUN_MARGIN_SECONDS = 15 * 60
 KEEPALIVE_SECONDS = 300
+IDLE_KEEPALIVE_SECONDS = 600     # gateway auto-closes an idle scorecard at 15 min (toolkit default)
 JOIN_GRACE_SECONDS = 120
 
 
 class _ActionWatch:
-    """Env proxy: flags the shared event on the first non-RESET step, delegates everything else."""
+    """Env proxy: flags the shared event on the first non-RESET step and stamps the run's last
+    gateway activity on every step; delegates everything else."""
 
-    def __init__(self, env: Any, first_action: threading.Event):
+    def __init__(self, env: Any, first_action: threading.Event, run: "Optional[_Run]" = None):
         self._env = env
         self._first_action = first_action
+        self._run = run
 
     def step(self, action, *args, **kwargs):
         name = getattr(action, "name", action)
         result = self._env.step(action, *args, **kwargs)
+        if self._run is not None:
+            self._run.last_activity = self._run.clock()
         if str(name).upper() != "RESET":
             self._first_action.set()
         return result
@@ -82,6 +87,8 @@ class _Run:
         self.first_action = threading.Event()
         self.stop = threading.Event()           # set when the run is over; ends the keep-alive loop
         self.keepalive_resets = 0
+        self.last_activity = run_start          # last gateway step by any game (idle watchdog)
+        self.envs: dict[str, Any] = {}          # live game envs (unwrapped), for the idle watchdog
         self.summaries: dict[str, dict] = {}
         self.lock = threading.Lock()
 
@@ -106,6 +113,28 @@ class _Run:
                 if self.first_action.wait(min(5.0, left)):
                     return
 
+    def idle_watchdog(self, idle_seconds: float) -> None:
+        """The gateway auto-closes a scorecard idle for STALE_MINUTES (toolkit default 15). While
+        every game is stuck retrying a relaunching model server (15-60 min) nothing touches the
+        gateway, so send one RESET on a game whose RESET cannot wipe completed levels."""
+        while not self.stop.is_set() and self.clock() < self.run_end:
+            if self.first_action.is_set() and self.clock() - self.last_activity >= idle_seconds:
+                for game_id, env in list(self.envs.items()):
+                    try:
+                        wipes = getattr(env, "would_full_reset", None)
+                        if callable(wipes) and wipes():
+                            continue
+                        env.reset()
+                        self.last_activity = self.clock()
+                        self.keepalive_resets += 1
+                        log.warning("idle watchdog: RESET on %s after %.0f s without gateway "
+                                    "activity", game_id, idle_seconds)
+                        break
+                    except Exception:
+                        log.exception("idle watchdog RESET failed on %s", game_id)
+            if self.stop.wait(min(30.0, idle_seconds / 2)):
+                return
+
     def _model_up(self) -> bool:
         if self.model_ready is None:
             return False
@@ -127,7 +156,8 @@ class _Run:
         summary: dict[str, Any] = {"game_id": game_id, "keeper": keeper, "status": "running"}
         env = session = None
         try:
-            env = _ActionWatch(make_env(game_id), self.first_action)
+            env = _ActionWatch(make_env(game_id), self.first_action, self)
+            self.envs[game_id] = env._env
             if keeper:
                 self.keep_alive(env, game_id)
             # The per-game clock starts when the model is up: server boot (~12 min) must not eat
@@ -147,6 +177,7 @@ class _Run:
             summary["traceback"] = traceback.format_exc()
             log.error("game %s failed: %s", game_id, summary["error"])
         finally:
+            self.envs.pop(game_id, None)
             self.gate.finish(progress)
             for obj in {id(o): o for o in (session, env) if o is not None}.values():
                 close = getattr(obj, "close", None)
@@ -176,6 +207,7 @@ def run_games(game_ids: list[str], make_env: Optional[Callable[[str], Any]],
               total_seconds: float, per_game_cap_seconds: float, log_dir,
               *, arena: Any = None, margin_seconds: float = RUN_MARGIN_SECONDS,
               keepalive_seconds: float = KEEPALIVE_SECONDS,
+              idle_keepalive_seconds: float = IDLE_KEEPALIVE_SECONDS,
               model_ready: Optional[Callable[[], bool]] = None,
               abort: Optional[threading.Event] = None,
               make_session: Optional[Callable[[str, Any], Any]] = None,
@@ -204,6 +236,8 @@ def run_games(game_ids: list[str], make_env: Optional[Callable[[str], Any]],
     if arena is not None:
         scorecard = arena.open_scorecard()       # one scorecard for the whole competition run
     threads = []
+    threading.Thread(target=run.idle_watchdog, args=(idle_keepalive_seconds,),
+                     name="idle-watchdog", daemon=True).start()
     try:
         for i, game_id in enumerate(game_ids):
             t = threading.Thread(target=run.play_one, name=f"game-{game_id}", daemon=True,

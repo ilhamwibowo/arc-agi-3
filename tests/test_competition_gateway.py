@@ -119,3 +119,26 @@ def test_main_competition_ignores_offline_smoke_cap(gateway, tmp_path, monkeypat
                      per_game_cap_seconds=180.0)
     assert captured["n_games"] == 25                      # offline_subset ignored
     assert captured["per_game_cap_seconds"] >= 8 * 3600   # smoke cap ignored
+
+
+def test_main_retries_when_arcade_lists_zero_games(tmp_path, monkeypatch):
+    """The toolkit swallows a failed /api/games and exposes zero games; main() must retry."""
+    from arc3 import kaggle_main
+    calls = {"n": 0}
+
+    class FakeArena:
+        def game_ids(self):
+            calls["n"] += 1
+            return [] if calls["n"] < 3 else ["aa00-1"]
+
+    monkeypatch.setattr(kaggle_main, "build_components",
+                        lambda *a, **kw: (FakeArena(), None, None))
+    monkeypatch.setattr(kaggle_main, "cap_address_space", lambda: None)
+    monkeypatch.setattr(kaggle_main.time, "sleep", lambda s: None)
+    monkeypatch.setattr(kaggle_main, "run_games",
+                        lambda ids, *a, **kw: {"ok": 0, "errors": 0, "hung": [], "levels_completed": 0,
+                                               "ids": ids})
+    monkeypatch.setattr(kaggle_main, "select_subset", lambda ids, s: ids)
+    s = kaggle_main.main(competition=False, run_end_epoch=time.time() + 9 * 3600,
+                         log_dir=str(tmp_path), llm_url="x", model_name="x", env_dir=str(ENV_DIR))
+    assert calls["n"] == 3 and s["ids"] == ["aa00-1"]

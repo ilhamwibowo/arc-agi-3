@@ -203,3 +203,27 @@ def test_real_offline_games_with_session(tmp_path):
                         make_session=lambda g, env: GameSession(env, GameConfig(game_id=g)),
                         model_ready=lambda: True)
     assert summary["ok"] == 3, summary
+
+
+def test_idle_watchdog_resets_when_no_game_touches_the_gateway(tmp_path):
+    """Every game stuck on a model outage: the gateway would auto-close the scorecard after
+    STALE_MINUTES of silence, so the runner RESETs one game that cannot lose levels."""
+    log = []
+    gate = PriorityGate()
+
+    class Stuck(FakeAgent):
+        def play_game(self, env, deadline):
+            env.step(Action("UP"))          # first action: keeper stops, watchdog armed
+            time.sleep(1.2)                 # "model outage"
+            return {}
+
+    class Safe(FakeEnv):
+        def would_full_reset(self):
+            return self.game_id == "done"   # RESET on this one would wipe its levels
+
+    summary = run_games(["done", "fresh"], lambda g: Safe(g, log), lambda g, p: Stuck(g, p, gate),
+                        gate, total_seconds=3600, per_game_cap_seconds=600, log_dir=tmp_path,
+                        keepalive_seconds=60, idle_keepalive_seconds=0.3, model_ready=lambda: True)
+    assert summary["ok"] == 2
+    watchdog = [e for e in log if e[1] == "RESET" and e[2] > min(x[2] for x in log if x[1] == "UP")]
+    assert watchdog and all(e[0] == "fresh" for e in watchdog), log

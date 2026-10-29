@@ -162,3 +162,52 @@ def test_arena_threads(tmp_path):
         steps = list(pool.map(play, arena.game_ids()[:8]))
     assert steps == [5] * 8 and arena.scorecard_id is not None
     assert arena.close_scorecard() is not None and arena.scorecard_id is None
+
+
+# ---- gateway hiccups: the toolkit returns None on any HTTP failure; a 9 h run must ride them out
+
+class FlakyWrapper(FakeWrapper):
+    def __init__(self, fail_first):
+        super().__init__()
+        self.fail_first = fail_first
+
+    def step(self, action, data=None):
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            self.calls.append((action.name, "FAILED"))
+            return None
+        return super().step(action, data)
+
+
+def test_step_retries_toolkit_failures(monkeypatch):
+    env = Env(FlakyWrapper(fail_first=2), "fake-0")
+    env.step_retry_sleep = 0.0
+    obs = env.step(Action("UP"))
+    assert obs.state == GameState.NOT_FINISHED
+    assert [c[1] for c in env._wrapper.calls] == ["FAILED", "FAILED", {}]
+    assert env.steps == 1                       # counted once, not per attempt
+
+
+def test_step_gives_up_after_attempts():
+    env = Env(FlakyWrapper(fail_first=99), "fake-0")
+    env.step_retry_sleep = 0.0
+    env.step_attempts = 3
+    with pytest.raises(RuntimeError, match="after 3 attempts"):
+        env.step(Action("UP"))
+
+
+def test_arena_make_retries_none(tmp_path, monkeypatch):
+    from arc3.env import Arena
+    arena = Arena.offline(Path("data/environments"), recordings_dir=tmp_path)
+    real = arena.arcade.make
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        return None if calls["n"] < 3 else real(*a, **kw)
+    monkeypatch.setattr(arena.arcade, "make", flaky)
+    env = arena.make(arena.game_ids()[0], retry_sleep=0.0)
+    assert calls["n"] == 3 and env.reset().state == GameState.NOT_FINISHED
+    monkeypatch.setattr(arena.arcade, "make", lambda *a, **kw: None)
+    with pytest.raises(RuntimeError, match="after 2 attempts"):
+        arena.make(arena.game_ids()[0], attempts=2, retry_sleep=0.0)

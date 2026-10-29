@@ -129,10 +129,18 @@ def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, mo
         raise RuntimeError(f"offline environment dir missing: {env_dir}")
     gate = gate or PriorityGate(max_active=max_active)
     log_path = Path(log_dir)
-    arena, make_session, agent_factory = build_components(
-        mode, base_url, "" if competition else env_dir, api_key, llm_url, model_name, gate, log_path,
-        agent_overrides=agent_overrides)
-    game_ids = arena.game_ids()
+    # The toolkit lists games at Arcade construction and swallows the HTTP error (zero games) if
+    # the gateway stalls for 10 s. One such blip must not end a 9 h run: rebuild and retry.
+    list_until = (run_end_epoch - 3600) if competition else (time.time() + 60)
+    while True:
+        arena, make_session, agent_factory = build_components(
+            mode, base_url, "" if competition else env_dir, api_key, llm_url, model_name, gate,
+            log_path, agent_overrides=agent_overrides)
+        game_ids = arena.game_ids()
+        if game_ids or time.time() >= list_until:
+            break
+        say(f"{mode}: arcade exposed zero games; retrying in 15 s")
+        time.sleep(15)
     if not game_ids:
         raise RuntimeError(f"{mode} arcade exposed zero games")
     if competition:
