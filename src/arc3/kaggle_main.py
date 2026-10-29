@@ -135,7 +135,13 @@ def main(competition: bool, run_end_epoch: float, log_dir: str, llm_url: str, mo
     game_ids = arena.game_ids()
     if not game_ids:
         raise RuntimeError(f"{mode} arcade exposed zero games")
-    if not competition:
+    if competition:
+        # Offline smoke settings (subset, short per-game cap) must never bound a real run:
+        # sub-001/sub-002 ended after ~33 min because a 180 s cap leaked into competition mode.
+        if per_game_cap_seconds < 4 * 3600:
+            say(f"competition: ignoring per_game_cap_seconds={per_game_cap_seconds} (offline smoke value)")
+            per_game_cap_seconds = 9 * 3600
+    else:
         game_ids = select_subset(game_ids, offline_subset)
     say(f"{mode}: {len(game_ids)} games: {' '.join(game_ids)}")
     # Competition mode: one scorecard opened by the runner around all games.

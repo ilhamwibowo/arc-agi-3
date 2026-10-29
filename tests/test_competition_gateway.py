@@ -95,3 +95,27 @@ def test_competition_arena_lists_games_and_plays_on_one_scorecard(gateway, tmp_p
     assert paths.count("/api/scorecard/close") == 1, paths
     assert any(p.startswith("/api/cmd/RESET") or p.endswith("/RESET") or "reset" in p.lower() for p in paths), paths
     assert arena.scorecard_id is None            # closed by the runner
+
+
+def test_main_competition_ignores_offline_smoke_cap(gateway, tmp_path, monkeypatch):
+    """sub-001/sub-002 (2026-10-28/29) ended after ~33 min: the notebook's offline smoke cap
+    (180 s per game) was passed through to competition mode, 110 games / 10 slots * 180 s.
+    main() must replace any short cap with the full run when competition=True."""
+    from arc3 import kaggle_main, runner
+    base, _ = gateway
+    monkeypatch.setenv("ARC_BASE_URL", base)
+    monkeypatch.setenv("ARC_API_KEY", "test-key-123")
+    captured = {}
+
+    def fake_run_games(game_ids, make_env, agent_factory, gate, **kw):
+        captured.update(kw)
+        captured["n_games"] = len(game_ids)
+        return {"ok": 0, "errors": 0, "hung": [], "levels_completed": 0}
+
+    monkeypatch.setattr(kaggle_main, "run_games", fake_run_games)
+    monkeypatch.setattr(kaggle_main, "cap_address_space", lambda: None)
+    kaggle_main.main(competition=True, run_end_epoch=time.time() + 9 * 3600, log_dir=str(tmp_path),
+                     llm_url="http://127.0.0.1:1/v1", model_name="x", offline_subset=1,
+                     per_game_cap_seconds=180.0)
+    assert captured["n_games"] == 25                      # offline_subset ignored
+    assert captured["per_game_cap_seconds"] >= 8 * 3600   # smoke cap ignored
