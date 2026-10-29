@@ -68,6 +68,11 @@ class AgentConfig:
                                         # gives up scores nothing, so keep retrying until the deadline
                                         # (the runner's abort ends a run whose server never returns).
     retry_sleep: float = 10.0
+    release_at_trim: bool = False       # run #10: a trim release cost a median 19 min wait; the
+                                        # 15-min rotation already redistributes slots
+    output_tokens_after_cut: int = 2500 # a reply cut at the cap without a tool call is re-asked
+                                        # with this smaller cap (run #10: 227 cuts = 18% of time)
+    stall_notice_every: int = 6         # turns between stall notices while a level is stalled
     llm_timeout: float = 900.0
     max_actions: Optional[int] = None   # overrides session.config.max_actions when set
     max_turns: Optional[int] = None
@@ -156,6 +161,7 @@ class Agent:
         self.resume_next = False
         self.idle_turns = 0           # consecutive turns that executed no action
         self._pinned_levels = 0       # levels whose rules have been pinned (see _pin_if_level_completed)
+        self._last_stall_notice = -10**9
         self.first_turn = True
         self.consecutive_failures = 0
         self.turn_end_reason = ""
@@ -237,6 +243,47 @@ class Agent:
             parts.append(image_part(png))
         return parts
 
+    # ---- stall signals (run #10: 35 of 65 lost levels were rules never found, and the model kept
+    # looping after writing "unsolvable"; the scheduler demotes such levels and the opener asks for
+    # new hypotheses instead of repeats) -------------------------------------------------------
+
+    def _update_stall(self) -> float:
+        """Set progress.stall from three signals and return it: (1) novelty: >= 40 actions on the
+        level and under 3 new states in the last 20; (2) actions on this level over 3x the median of
+        this game's completed levels; (3) the model wrote 'impossible'/'unsolvable'/... into memory."""
+        p = self.progress
+        signals = 0
+        ev = self._evidence() or {}
+        nv = ev.get("novelty") or {}
+        if nv.get("actions", 0) >= 40 and nv.get("window", 0) >= 20 and nv.get("new_in_window", 99) < 3:
+            signals += 1
+        if p is not None and p.level_actions:
+            done = sorted(p.level_actions)
+            median = done[len(done) // 2]
+            if median > 0 and p.actions_on_level > 3 * median:
+                signals += 1
+        words = ("impossible", "unsolvable", "unwinnable", "exhausted", "give up", "no way to")
+        text = ""
+        try:
+            fn = getattr(self.tool, "rules_text", None)
+            text = (fn() if callable(fn) else "") + " " + self._memory_summary()
+        except Exception:  # noqa: BLE001
+            pass
+        if any(w in text.lower() for w in words):
+            signals += 1
+        stall = 0.0 if signals == 0 else (0.5 if signals == 1 else 1.0)
+        if p is not None:
+            p.stall = stall
+        return stall
+
+    def _stall_facts(self) -> dict:
+        fn = getattr(self.tool, "stall_facts", None)
+        try:
+            return fn() if callable(fn) else {}
+        except Exception as e:  # noqa: BLE001
+            self._trace({"kind": "evidence_error", "error": repr(e)[:300]})
+            return {}
+
     def _pinned_block(self) -> str:
         fn = getattr(self.tool, "pinned_block", None)
         try:
@@ -267,8 +314,9 @@ class Agent:
 
     # ------------------------------------------------------------ model call
 
-    def _call_llm(self, deadline: Optional[float]):
+    def _call_llm(self, deadline: Optional[float], max_tokens: Optional[int] = None):
         cfg = self.cfg
+        max_tokens = max_tokens or cfg.output_tokens
         while True:
             timeout = cfg.llm_timeout
             if deadline is not None:
@@ -277,7 +325,7 @@ class Agent:
             self._acquire_slot(deadline)
             t0 = time.time()
             try:
-                resp = self.llm.chat(msgs, tools=[PYTHON_TOOL], max_tokens=cfg.output_tokens,
+                resp = self.llm.chat(msgs, tools=[PYTHON_TOOL], max_tokens=max_tokens,
                                      temperature=cfg.temperature, top_p=cfg.top_p,
                                      top_k=cfg.top_k, seed=cfg.seed, timeout=timeout)
             except Exception as e:
@@ -393,7 +441,12 @@ class Agent:
         self._rotate_slot()
         self._pin_if_level_completed(session)
         cfg, ts, t0 = self.cfg, TurnStats(), time.time()
+        stalled = self._update_stall()
         opener = self._resume_text(session) if self.resume_next else self.build_opener(session)
+        if stalled and self.stats.turns - self._last_stall_notice >= cfg.stall_notice_every:
+            opener = _prepend_text(prompts.stall_notice(self._stall_facts()), opener)
+            self._last_stall_notice = self.stats.turns
+            self._trace({"kind": "stall_notice", "turn": self.stats.turns, "stall": stalled})
         if getattr(self.context, "trimmed_since_last_user", False):
             # older turns were dropped: remind the model what still persists (memory, functions)
             notice = prompts.trim_notice(self._memory_summary(), self.retained)
@@ -406,17 +459,19 @@ class Agent:
 
         results: list[ActionResult] = []
         acted, nudged, reason = False, False, ""
+        next_max_tokens: Optional[int] = None
         while not reason:
             if self.context.trim(cfg.context_tokens, cfg.drain_tokens):
                 # The prefix cache is gone anyway, so hand the slot over if someone outranks us.
                 # Not unconditionally: run #5 games waited 6,677-8,952 s to get it back.
-                released = self._should_yield()
+                released = cfg.release_at_trim and self._should_yield()
                 if released:
                     self._release_slot()
                 self.stats.trims += 1
                 self._trace({"kind": "trim", "estimate": self.context.total_tokens(),
                              "messages": len(self.context.messages), "released": released})
-            resp = self._call_llm(deadline)
+            resp = self._call_llm(deadline, max_tokens=next_max_tokens)
+            next_max_tokens = None
             self.stats.model_calls += 1
             ts.generated_tokens += resp.usage.get("completion_tokens", 0)
             ts.prompt_tokens += resp.usage.get("prompt_tokens", 0)
@@ -430,6 +485,8 @@ class Agent:
                 nudged = True
                 self.stats.nudges += 1
                 cut = resp.finish_reason == "length"
+                if cut and cfg.output_tokens_after_cut:
+                    next_max_tokens = cfg.output_tokens_after_cut
                 self.context.add_user(getattr(prompts, "NUDGE_CUT", prompts.NUDGE) if cut else prompts.NUDGE)
                 continue
 

@@ -283,3 +283,26 @@ def test_pinned_rules_survive_and_show_in_opener(tmp_path):
     assert "[pinned notes]" not in prompts.build_opener([], step=3, level=1, win_levels=3,
                                                         valid_actions=["UP"])
     assert "pinned notes below" in prompts.trim_notice("(empty)")
+
+
+def test_stall_facts_from_a_real_game(tmp_path):
+    """stall_facts never raises and reports clicked cells whose surroundings changed."""
+    s = _session("vc33", tmp_path)                    # click game
+    tool = PythonTool(s)
+    facts = tool.stall_facts()
+    assert set(facts) <= {"changed_since_click", "new_vs_previous_level", "goals",
+                          "changed_error", "new_error", "goals_error"}
+    assert facts.get("new_vs_previous_level") == []    # level 1: no previous level
+    valid = s.valid_actions
+    if "MOUSE" in valid:
+        tool.run("action([('MOUSE', 10, 10)])") if False else None
+    # synthetic record check for the two static helpers
+    from arc3.wm import Record
+    g0 = np.zeros((64, 64), np.int8); g1 = g0.copy(); g1[0:4, 10:21] = 7
+    rec = Record(level_start_grid=g1, previous=[Record(level_start_grid=g0)])
+    assert PythonTool._new_vs_previous_level(rec) == [(7, 44, 0, 3, 10, 20)]
+    before = g1.copy(); after = g1.copy(); after[5:7, 5:7] = 3
+    rec.transitions.append((before, {"action": "MOUSE", "row": 5, "col": 9}, after, "ongoing"))
+    assert PythonTool._changed_since_click(rec) == [(5, 9)]       # 9x9 window around (5,9) changed
+    rec.transitions.append((after, {"action": "MOUSE", "row": 40, "col": 40}, after, "ongoing"))
+    assert PythonTool._changed_since_click(rec) == [(5, 9)]       # (40,40) unchanged: not listed

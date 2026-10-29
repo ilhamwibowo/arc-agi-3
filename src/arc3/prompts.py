@@ -170,6 +170,39 @@ RESUME = ("You paused on the turn budget. Your earlier tool results above are st
           "not restart the analysis. Continue from them and call `action(...)` with your best "
           "next action or short batch.")
 
+STALL_NOTICE = ("STALL NOTICE: this level is not progressing (no new board states, far more actions "
+                "than your solved levels, or you wrote it off). A note saying a level is impossible "
+                "is a hypothesis, not a fact: every level is solvable. Do not repeat sequences that "
+                "already failed and do not burn the budget with 'hold' or no-op moves. Before acting, "
+                "pick ONE untested hypothesis from this list and test it with real actions:")
+
+
+def stall_notice(facts: Optional[dict]) -> str:
+    """Opener prefix when a level stalls (agent.py decides when). `facts` is
+    PythonTool.stall_facts(): objects clicked only in an older board state, elements new since the
+    previous level, candidate goals."""
+    f = facts or {}
+    lines = [STALL_NOTICE]
+    changed = f.get("changed_since_click") or []
+    if changed:
+        items = ", ".join(f"({r},{c})" for r, c in changed[:8])
+        lines.append(f"- Objects you clicked only while the board around them looked different "
+                     f"from now (re-try them in the current state): {items}.")
+    new = f.get("new_vs_previous_level") or []
+    if new:
+        items = "; ".join(f"{_colour(c)} {n} cells at rows {r0}-{r1}, cols {c0}-{c1}"
+                          for c, n, r0, r1, c0, c1 in new[:6])
+        lines.append(f"- Elements this level has that the previous level's start did not "
+                     f"(likely the new mechanic): {items}.")
+    goals = f.get("goals") or []
+    if goals:
+        lines.append("- Alternative goals you have not tested: " + ", ".join(goals[:5]) + ".")
+    if len(lines) == 1:
+        lines.append("- Re-list every object and every action's effect from scratch in code; look "
+                     "for what you have assumed but never measured.")
+    return "\n".join(lines) + "\n\n"
+
+
 def idle_notice(idle_turns: int) -> str:
     return (f"NOTICE: your last {idle_turns} turns executed no action. Idling earns nothing: completed "
             "levels are never lost whatever happens next, a no-op RESET is refused, and no move is "

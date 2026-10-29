@@ -29,7 +29,7 @@ import asyncio
 import itertools
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 TAIL_BY_REMAINING = {0: 0.0, 1: 5.0, 2: 7.0}
@@ -38,6 +38,13 @@ TAIL_FADE_FRACTION = 0.2
 DEFAULT_LEVELS = 10
 UNSTARTED_PRIORITY = float("inf")
 YIELD_HYSTERESIS = 1.2            # a waiter must outrank the holder by this factor to take over
+# Run #10 trace review (docs/trace-review-run10.md): the C-term starved long first levels (g50t,
+# sk48, cd82, wa30 waited 65-116 min during L1) while levels the model had declared impossible kept
+# ~460 model-minutes. Three corrections, all multiplicative on Franzen's P = (A + B) * C:
+L1_DECAY_SCALE = 2.0              # level 1: token/action half-lives doubled (rules are learned here)
+STALL_DEMOTION = 0.5              # priority x (1 - STALL_DEMOTION * stall), stall in [0, 1]
+PROGRESS_BOOST = 1.5              # x1.5 for PROGRESS_BOOST_SECONDS after a level completes
+PROGRESS_BOOST_SECONDS = 1200.0
 
 
 @dataclass
@@ -50,13 +57,20 @@ class GameProgress:
     levels_total: int = 0         # 0 when unknown
     started: bool = False         # had at least one model turn
     finished: bool = False
+    stall: float = 0.0            # 0..1, set by the agent from novelty / action-count / "impossible" signals
+    last_level_at: Optional[float] = None   # clock time of the last level completion
+    level_actions: list = field(default_factory=list)   # actions spent on each completed level
 
-    def level_completed(self, levels_completed: int) -> None:
+    def level_completed(self, levels_completed: int, now: Optional[float] = None) -> None:
         """Call when the environment reports a new level count; resets the per-level counters."""
         if levels_completed != self.level:
+            if levels_completed > self.level:
+                self.level_actions.append(self.actions_on_level)
+                self.last_level_at = time.time() if now is None else now
             self.level = levels_completed
             self.actions_on_level = 0
             self.tokens_on_level = 0
+            self.stall = 0.0
 
 
 def _clip_levels(levels_total: int) -> int:
@@ -74,8 +88,10 @@ def tail_value(levels_after_current: int, run_fraction: float) -> float:
     return base * max(0.0, (1.0 - run_fraction) / TAIL_FADE_FRACTION)
 
 
-def priority(progress: GameProgress, run_fraction: float = 0.0) -> float:
-    """P = (A + B) * C for one game; `run_fraction` is elapsed / scheduled runtime in [0, 1]."""
+def priority(progress: GameProgress, run_fraction: float = 0.0,
+             now: Optional[float] = None) -> float:
+    """P = (A + B) * C * stall * boost for one game; `run_fraction` is elapsed / scheduled runtime
+    in [0, 1]. (A + B) * C is Franzen's formula; the last two factors are run #10 corrections."""
     if not progress.started:
         return UNSTARTED_PRIORITY
     n = _clip_levels(progress.levels_total)
@@ -84,8 +100,16 @@ def priority(progress: GameProgress, run_fraction: float = 0.0) -> float:
     t = max(0, progress.tokens_on_level)
     a_term = l * (25.0 / (25.0 + a)) ** 2 * 55.0 / (n * (n + 1) / 2.0)
     b_term = tail_value(n - l, run_fraction)
-    c_term = 0.25 * 2.0 ** (-((a / 115.0) ** 2)) + 0.75 * 2.0 ** (-((t / 62000.0) ** 2))
-    return (a_term + b_term) * c_term
+    scale = L1_DECAY_SCALE if l == 1 else 1.0
+    c_term = (0.25 * 2.0 ** (-((a / (115.0 * scale)) ** 2))
+              + 0.75 * 2.0 ** (-((t / (62000.0 * scale)) ** 2)))
+    p = (a_term + b_term) * c_term
+    p *= 1.0 - STALL_DEMOTION * min(1.0, max(0.0, progress.stall))
+    if progress.last_level_at is not None:
+        age = (time.time() if now is None else now) - progress.last_level_at
+        if 0.0 <= age < PROGRESS_BOOST_SECONDS:
+            p *= PROGRESS_BOOST
+    return p
 
 
 class PriorityGate:

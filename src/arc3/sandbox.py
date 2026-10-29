@@ -368,6 +368,73 @@ class PythonTool:
             parts.append(snap)
         return "\n".join(parts)
 
+    def stall_facts(self) -> dict:
+        """Facts for the stall notice (each part independent): clicked cells whose 9x9 surroundings
+        differ now from when they were last clicked; colours/regions present at this level's start
+        but not at the previous level's start; untested candidate goals."""
+        out: dict = {}
+        try:
+            rec = self._wm_record()
+        except Exception:  # noqa: BLE001
+            return out
+        try:
+            out["changed_since_click"] = self._changed_since_click(rec)
+        except Exception as e:  # noqa: BLE001
+            out["changed_error"] = f"{type(e).__name__}: {e}"[:120]
+        try:
+            out["new_vs_previous_level"] = self._new_vs_previous_level(rec)
+        except Exception as e:  # noqa: BLE001
+            out["new_error"] = f"{type(e).__name__}: {e}"[:120]
+        try:
+            out["goals"] = [name for name, _ in self.wm.goal_menu(rec, max_items=5)]
+        except Exception as e:  # noqa: BLE001
+            out["goals_error"] = f"{type(e).__name__}: {e}"[:120]
+        return out
+
+    @staticmethod
+    def _changed_since_click(rec, radius: int = 4, max_items: int = 8) -> list:
+        """(row, col) of clicks whose surrounding window at click time differs from the board now,
+        newest first, without repeats. A click that was only ever tried in one board state is not
+        a tested hypothesis once that state has changed (run #10 vc33: plugs clicked while closed)."""
+        cur = np.asarray(rec.current_grid)
+        last_window: dict = {}
+        for before, a, _after, _ in rec.transitions:
+            if a.get("action") != "MOUSE" or a.get("row") is None:
+                continue
+            r, c = int(a["row"]), int(a["col"])
+            b = np.asarray(before)
+            last_window[(r, c)] = b[max(0, r - radius):r + radius + 1, max(0, c - radius):c + radius + 1].copy()
+        out = []
+        for (r, c), win in reversed(list(last_window.items())):
+            now = cur[max(0, r - radius):r + radius + 1, max(0, c - radius):c + radius + 1]
+            if now.shape != win.shape or not np.array_equal(now, win):
+                out.append((r, c))
+            if len(out) >= max_items:
+                break
+        return out
+
+    @staticmethod
+    def _new_vs_previous_level(rec, max_items: int = 6) -> list:
+        """[(colour, cells, row0, row1, col0, col1)] for colours that occupy cells at this level's
+        start where the previous level's start had a different colour; biggest first."""
+        if not rec.previous:
+            return []
+        prev = np.asarray(rec.previous[-1].level_start_grid)
+        cur = np.asarray(rec.level_start_grid)
+        if prev.shape != cur.shape:
+            return []
+        diff = cur != prev
+        out = []
+        for colour in np.unique(cur[diff]):
+            mask = diff & (cur == colour)
+            n = int(mask.sum())
+            if n < 4:
+                continue
+            rows, cols = np.nonzero(mask)
+            out.append((int(colour), n, int(rows.min()), int(rows.max()), int(cols.min()), int(cols.max())))
+        out.sort(key=lambda t: -t[1])
+        return out[:max_items]
+
     def evidence(self) -> dict:
         """Per-level facts for the opener (unclicked objects, blocked moves, novelty), from the
         wm record. Each part is independent; one that fails is left out rather than lose a turn."""

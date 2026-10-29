@@ -389,8 +389,9 @@ def test_agent_releases_at_trim_only_when_outranked_and_rotates_after_15_minutes
 
     gate, clock = _YieldGate(), _Clock()
     llm = FakeLLM([FakeLLM.code("action(['LEFT'])") for _ in range(6)])
-    agent = Agent(llm, AgentConfig(retry_sleep=0), tool_factory=FakeTool, gate=gate,
-                  progress=GameProgress("g"), clock=clock)
+    # release_at_trim is off by default since run #10 (a release cost a median 19 min wait)
+    agent = Agent(llm, AgentConfig(retry_sleep=0, release_at_trim=True), tool_factory=FakeTool,
+                  gate=gate, progress=GameProgress("g"), clock=clock)
     session = FakeSession()
     agent.reset_game(session)
     agent.context.trim = lambda *a, **k: 1          # every call "trims"
@@ -434,7 +435,7 @@ def test_gate_without_should_yield_keeps_the_old_release_at_trim():
             self.releases += 1
 
     gate = OldGate()
-    agent = Agent(FakeLLM([FakeLLM.code("action(['LEFT'])")]), AgentConfig(retry_sleep=0),
+    agent = Agent(FakeLLM([FakeLLM.code("action(['LEFT'])")]), AgentConfig(retry_sleep=0, release_at_trim=True),
                   tool_factory=FakeTool, gate=gate, progress=GameProgress("g"))
     session = FakeSession()
     agent.reset_game(session)

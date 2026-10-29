@@ -182,3 +182,44 @@ def test_many_threads_never_exceed_capacity():
     for t in threads:
         t.join(10)
     assert peak[0] <= 3 and not any(t.is_alive() for t in threads)
+
+
+# ------------------------------------------------------------------ run #10 corrections
+
+def test_level_one_decays_half_as_fast():
+    from arc3.scheduler import L1_DECAY_SCALE
+    assert L1_DECAY_SCALE == 2.0
+    l1 = started("a", level=0, levels_total=7, actions_on_level=115, tokens_on_level=62000)
+    l2 = started("b", level=1, levels_total=7, actions_on_level=115, tokens_on_level=62000)
+    # same spend: the level-1 game keeps a larger share of its C term than Franzen's formula gives
+    c_franzen = 0.25 * 2 ** -1 + 0.75 * 2 ** -1
+    c_l1 = 0.25 * 2 ** -(0.5 ** 2) + 0.75 * 2 ** -(0.5 ** 2)
+    a1 = 1 * (25 / 140) ** 2 * 55 / 28 + 8.0
+    assert priority(l1) == pytest.approx(a1 * c_l1)
+    a2 = 2 * (25 / 140) ** 2 * 55 / 28 + 8.0
+    assert priority(l2) == pytest.approx(a2 * c_franzen)
+    assert c_l1 > c_franzen
+
+
+def test_stall_demotes_and_recent_level_boosts():
+    base = started("a", level=1, levels_total=7, actions_on_level=10)
+    stalled = started("b", level=1, levels_total=7, actions_on_level=10, stall=1.0)
+    half = started("c", level=1, levels_total=7, actions_on_level=10, stall=0.5)
+    assert priority(stalled) == pytest.approx(0.5 * priority(base))
+    assert priority(half) == pytest.approx(0.75 * priority(base))
+    fresh = started("d", level=1, levels_total=7, actions_on_level=10, last_level_at=1000.0)
+    assert priority(fresh, now=1000.0 + 600) == pytest.approx(1.5 * priority(base))
+    assert priority(fresh, now=1000.0 + 1300) == pytest.approx(priority(base))
+
+
+def test_level_completed_records_actions_and_clears_stall():
+    p = started("g", levels_total=5)
+    p.actions_on_level, p.stall = 42, 1.0
+    p.level_completed(1, now=500.0)
+    assert p.level_actions == [42] and p.last_level_at == 500.0 and p.stall == 0.0
+    assert p.actions_on_level == 0
+    p.actions_on_level = 7
+    p.level_completed(1, now=600.0)          # same level: no change
+    assert p.level_actions == [42] and p.last_level_at == 500.0
+    p.level_completed(0, now=700.0)          # a full reset wiped levels: nothing appended
+    assert p.level_actions == [42] and p.level == 0

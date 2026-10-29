@@ -345,3 +345,65 @@ def test_agent_pins_rules_when_a_level_completes():
     # the second turn's opener (after level 1) carried the pinned block
     opener2 = llm.calls[1]["messages"][-1]
     assert opener2["role"] == "user" and "Level 1 solved with rules" in opener2["content"], opener2
+
+
+def test_trim_keeps_slot_by_default_and_cut_reply_is_reasked_with_small_cap():
+    from arc3.llm import LLMResponse
+    from arc3.scheduler import GameProgress
+
+    class Gate:
+        def __init__(self):
+            self.releases, self.should = 0, True
+        def acquire(self, p, timeout=None):
+            return True
+        def release(self, p):
+            self.releases += 1
+        def should_yield(self, p):
+            return self.should
+
+    cut = LLMResponse(content="thinking forever", reasoning="...", tool_calls=[],
+                      usage={"prompt_tokens": 0, "completion_tokens": 6000, "cached_tokens": 0},
+                      finish_reason="length")
+    llm = FakeLLM([cut, FakeLLM.code("action(['RIGHT'])")])
+    gate = Gate()
+    agent = Agent(llm, AgentConfig(retry_sleep=0), tool_factory=FakeTool, gate=gate,
+                  progress=GameProgress("g"))
+    session = FakeSession()
+    agent.reset_game(session)
+    agent.context.trim = lambda *a, **k: 1          # every call trims; an outranking waiter exists
+    agent.play_turn(session)
+    assert gate.releases == 0                        # release_at_trim defaults to False
+    assert [c["max_tokens"] for c in llm.calls] == [6000, 2500]   # the re-ask after a cut is capped
+    assert any("hit the length limit" in m["content"] for m in llm.calls[1]["messages"] if m["role"] == "user")
+
+
+def test_stall_notice_when_model_writes_impossible():
+    from arc3.scheduler import GameProgress
+
+    class StallTool(FakeTool):
+        rules = "this level is impossible, giving up"
+        def rules_text(self):
+            return self.rules
+        def memory_summary(self):
+            return "'rules': '...'"
+        def stall_facts(self):
+            return {"changed_since_click": [(5, 9)], "new_vs_previous_level": [(7, 12, 0, 3, 10, 20)],
+                    "goals": ["avatar_reaches_color_4", "all_color_7_removed"]}
+
+    llm = FakeLLM([FakeLLM.code("action(['RIGHT'])") for _ in range(3)])
+    prog = GameProgress("g")
+    agent = Agent(llm, AgentConfig(retry_sleep=0, stall_notice_every=2), tool_factory=StallTool,
+                  progress=prog)
+    session = FakeSession()
+    agent.reset_game(session)
+    agent.play_turn(session)
+    assert prog.stall == 0.5                          # one signal: the impossibility note
+    first = llm.calls[0]["messages"][-1]["content"]
+    assert first.startswith("STALL NOTICE") and "(5,9)" in first and "avatar_reaches_color_4" in first
+    assert "rows 0-3, cols 10-20" in first
+    agent.play_turn(session)                          # too soon for another notice
+    assert not llm.calls[1]["messages"][-1]["content"].startswith("STALL NOTICE")
+    agent.play_turn(session)
+    assert llm.calls[2]["messages"][-1]["content"].startswith("STALL NOTICE")
+    kinds = [e["kind"] for e in session.events if e.get("kind") == "stall_notice"]
+    assert len(kinds) == 2
