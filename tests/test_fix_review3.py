@@ -197,7 +197,7 @@ def test_trim_notice_and_memory_summary(tmp_path):
     assert summary.startswith("'rules': 'walls black; bar = budget'") and len(summary) <= 120
     note = prompts.trim_notice(summary, ["read", "step"])
     assert note.startswith("Trim notice: older turns were dropped. Your memory dict still holds: ")
-    assert note.rstrip().endswith("Retained functions: read, step.")
+    assert "Retained functions: read, step." in note
 
 
 # ------------------------------------------------------------------ 5/6. stop reasons, sandbox extras
@@ -253,3 +253,33 @@ def test_level_reset_wording_is_neutral(tmp_path):
     opener = prompts.build_opener([res], step=43, level=0, win_levels=7,
                                   valid_actions=s.valid_actions)
     assert "Causes: a fatal move, an exhausted move budget, or a deliberate restart" in opener
+
+
+# ------------------------------------------------------------------ pinned notes (solved-level memory)
+
+def test_pinned_rules_survive_and_show_in_opener(tmp_path):
+    from arc3.sandbox import PINNED_CHARS
+    s = _session("ls20", tmp_path)
+    tool = PythonTool(s)
+    assert tool.pinned_block() == ""                      # nothing written yet
+    tool.run("memory['rules'] = 'arrows move the blue square; green cell ends the level'")
+    block = tool.pinned_block()
+    assert block.startswith("Rules you have written down (memory['rules']): arrows move")
+    tool.pin_level(1)
+    assert tool.pinned == ["Level 1 solved with rules: arrows move the blue square; green cell ends the level"]
+    # identical current rules are not repeated as a snapshot
+    assert tool.pinned_block().count("arrows move") == 1
+    tool.run("memory['rules'] = 'level 2: red walls kill'")
+    block = tool.pinned_block()
+    assert "red walls kill" in block and "Level 1 solved with rules: arrows move" in block
+    tool.pin_level(1)                                     # re-pin same level replaces, no duplicate
+    assert len(tool.pinned) == 1 and tool.pinned[0].endswith("red walls kill")
+    tool.run("memory['rules'] = 'x' * 5000")
+    assert len(tool.rules_text()) == 1500 and tool.rules_text().endswith("...")
+    assert len(tool.pinned_block()) <= PINNED_CHARS + 100
+    opener = prompts.build_opener([], step=3, level=1, win_levels=3, valid_actions=["UP"],
+                                  pinned=tool.pinned_block())
+    assert "[pinned notes]" in opener and "Level 1 solved" in opener
+    assert "[pinned notes]" not in prompts.build_opener([], step=3, level=1, win_levels=3,
+                                                        valid_actions=["UP"])
+    assert "pinned notes below" in prompts.trim_notice("(empty)")

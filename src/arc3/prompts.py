@@ -71,6 +71,7 @@ TOOL = """\
 - One tool, `python(code)`. Each call has a {timeout}s limit and its printed output is cut to about {out_tokens} tokens, so print compact summaries: object lists, counts, coordinates, small crops. Never print a whole board.
 - Variables reset between calls, but top-level functions you define are kept and can be called later (no decorators/annotations; top-level values they read are frozen copies, up to 64 KB); `source('name')` prints one. `np`, `math`, `collections`, `itertools` are preloaded. Importable modules: {modules}.
 - `memory` is a dict that persists across calls; variables do not. Store plans, maps, rule notes there (`memory['plan'] = ...`). Mutate it; do not reassign it.
+- Keep `memory['rules']` as a short plain-text note of what you know for sure: what each action does, the goal, what kills you, how levels differ. Update it when you learn or disprove something. It is shown back to you every turn and survives when older turns are dropped, so write it for a reader who has seen nothing else.
 - Call the tool as often as you like. Think in short bursts: when a hypothesis can be checked with code, call the tool instead of reasoning further."""
 
 STRATEGY = """\
@@ -155,7 +156,8 @@ LEVEL_RESET = (
     "same sequence.")
 
 TRIM_NOTICE = ("Trim notice: older turns were dropped. Your memory dict still holds: {memory}. "
-               "Retained functions: {functions}.")
+               "Retained functions: {functions}. Your pinned notes below are complete; do not "
+               "re-probe mechanics they already settle.")
 
 TAIL_FIRST = ("Start with a compact structural summary of `current_frame` from Python (not a "
               "printout of the board), then probe. When ready, call `action(...)` from inside "
@@ -300,9 +302,10 @@ def summarize_sequence(results: Sequence[ActionResult], max_lines: int = 12) -> 
 def build_opener(results: Sequence[ActionResult], step: int, level: int, win_levels: int,
                  valid_actions: Sequence[str], first_turn: bool = False,
                  images: Sequence[str] = (), retained: Sequence[str] = (),
-                 evidence: Optional[dict] = None) -> str:
+                 evidence: Optional[dict] = None, pinned: str = "") -> str:
     """Text of the user message that starts a turn. `images` are captions of attached images;
-    `evidence` is PythonTool.evidence() (see evidence_lines)."""
+    `evidence` is PythonTool.evidence() (see evidence_lines); `pinned` is
+    PythonTool.pinned_block(): rules notes that survive trims and level changes."""
     lines: list[str] = []
     lines.extend(summarize_sequence(results))
     fatal = next((r for r in results if r.game_over), None)
@@ -317,6 +320,8 @@ def build_opener(results: Sequence[ActionResult], step: int, level: int, win_lev
     if budget:
         lines.append(budget)
     lines.extend(evidence_lines(evidence, valid_actions))
+    if pinned:
+        lines.append("[pinned notes]\n" + pinned)
     total = f" of {win_levels}" if win_levels else ""
     lines.append(f"Current state: step {step}, level {level + 1}{total} "
                  f"({level} completed). Valid actions: {', '.join(valid_actions)}.")

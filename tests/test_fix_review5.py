@@ -236,8 +236,9 @@ def test_output_cap_and_short_burst_line():
     assert AgentConfig().output_tokens == 6000
     p = prompts.build_system_prompt()
     assert "Think in short bursts: when a hypothesis can be checked with code, call the tool" in p
-    # Items 2-4 of fix-review-5 together must add under 500 chars to the run #5 prompt (8803).
-    assert len(p) - 8803 < 500
+    # Items 2-4 of fix-review-5 together added under 500 chars to the run #5 prompt (8803); the
+    # pinned-notes instruction (memory['rules'], 2026-10-29) adds ~330 more. Keep the prompt lean.
+    assert len(p) - 8803 < 900
 
 
 # ------------------------------------------------------------------ 5. helper retention

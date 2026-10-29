@@ -315,3 +315,33 @@ def test_idle_turns_release_slot_then_park():
     notices = [m for c in llm.calls for m in user_texts(c["messages"])[-1:] if "Idling earns nothing" in m]
     assert len(notices) >= 3                   # shown from the 3rd idle turn on, and after parking
     assert agent.idle_turns == 0               # the real action cleared the counter
+
+
+def test_agent_pins_rules_when_a_level_completes():
+    """The agent snapshots memory['rules'] the turn after the environment reports a new level,
+    and the opener of that turn already carries the pinned block."""
+    class PinTool(FakeTool):
+        def __init__(self, session):
+            super().__init__(session)
+            self.pins: list[int] = []
+
+        def pin_level(self, level):
+            self.pins.append(level)
+
+        def pinned_block(self):
+            return "Level %d solved with rules: SPACE at col 10" % self.pins[-1] if self.pins else ""
+
+    session = FakeSession(win_levels=2)
+    llm = FakeLLM([
+        FakeLLM.code('action(["RIGHT", "RIGHT", "SPACE"])'),   # completes level 1
+        FakeLLM.code('action(["SPACE"])'),                     # still at col 10: completes level 2 -> win
+    ])
+    agent = Agent(llm, AgentConfig(retry_sleep=0), tool_factory=PinTool,
+                  render_png=lambda g, s: fake_png(), render_diff_png=lambda a, b, s: fake_png())
+    stats = agent.play_game(session)
+    assert stats.levels_completed == 2, stats
+    tool = agent.tool
+    assert tool.pins == [1], tool.pins          # level 2 ends the game: no further turn to pin in
+    # the second turn's opener (after level 1) carried the pinned block
+    opener2 = llm.calls[1]["messages"][-1]
+    assert opener2["role"] == "user" and "Level 1 solved with rules" in opener2["content"], opener2

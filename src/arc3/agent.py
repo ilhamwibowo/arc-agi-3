@@ -155,6 +155,7 @@ class Agent:
         self.retained: list[str] = []
         self.resume_next = False
         self.idle_turns = 0           # consecutive turns that executed no action
+        self._pinned_levels = 0       # levels whose rules have been pinned (see _pin_if_level_completed)
         self.first_turn = True
         self.consecutive_failures = 0
         self.turn_end_reason = ""
@@ -227,7 +228,7 @@ class Agent:
             self.last_results, step=obs.step, level=obs.levels_completed,
             win_levels=obs.win_levels, valid_actions=list(session.valid_actions),
             first_turn=self.first_turn, images=[c for c, _ in images], retained=self.retained,
-            evidence=self._evidence())
+            evidence=self._evidence(), pinned=self._pinned_block())
         if not images:
             return text
         parts = [text_part(text)]
@@ -235,6 +236,25 @@ class Agent:
             parts.append(text_part(f"Image: {caption}"))
             parts.append(image_part(png))
         return parts
+
+    def _pinned_block(self) -> str:
+        fn = getattr(self.tool, "pinned_block", None)
+        try:
+            return fn() if callable(fn) else ""
+        except Exception:  # noqa: BLE001 - a broken repr must not cost a turn
+            return ""
+
+    def _pin_if_level_completed(self, session) -> None:
+        """Snapshot memory['rules'] the moment the environment reports a new completed level."""
+        done = session.current.levels_completed
+        if done > self._pinned_levels:
+            fn = getattr(self.tool, "pin_level", None)
+            if callable(fn):
+                try:
+                    fn(done)
+                except Exception as e:  # noqa: BLE001 - a broken repr must not cost a turn
+                    self._trace({"kind": "pin_error", "error": repr(e)[:300]})
+            self._pinned_levels = done
 
     def _memory_summary(self) -> str:
         fn = getattr(self.tool, "memory_summary", None)
@@ -371,6 +391,7 @@ class Agent:
         if callable(reset):
             reset()
         self._rotate_slot()
+        self._pin_if_level_completed(session)
         cfg, ts, t0 = self.cfg, TurnStats(), time.time()
         opener = self._resume_text(session) if self.resume_next else self.build_opener(session)
         if getattr(self.context, "trimmed_since_last_user", False):

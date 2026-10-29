@@ -79,6 +79,10 @@ DIFF_ITEMS = 3                     # objects detailed per diff category
 SNIPPET = "<snippet>"
 
 
+RULES_CHARS = 1500      # memory['rules'] shown back to the model (chars)
+PINNED_CHARS = 2500     # whole pinned block in the opener (chars)
+
+
 class StaleStateError(RuntimeError):
     """action() called again after an ineffective action in the same snippet."""
 
@@ -305,6 +309,7 @@ class PythonTool:
         self.last_animation_frames: list = []
         # Plain dict that survives across calls (variables do not); the model stores plans here.
         self.memory: dict = {}
+        self.pinned: list[str] = []         # per-level snapshots of memory['rules'] (never trimmed)
         self._views: dict[int, TransitionView] = {}
         self._calls = 0
         self.wm = WM(record=self._wm_record, hud_border=session.config.hud_border)
@@ -322,6 +327,46 @@ class PythonTool:
             parts.append(f"{k!r}: {r[:60] + '...' if len(r) > 60 else r}")
         text = "; ".join(parts)
         return text if len(text) <= limit else text[:limit - 3] + "..."
+
+    # ---- pinned notes: survive trims and level changes ----------------------------------------
+
+    def rules_text(self, limit: int = RULES_CHARS) -> str:
+        """memory['rules'] as plain text (the model's own description of mechanics and goal)."""
+        v = self.memory.get("rules")
+        if v is None:
+            return ""
+        text = v if isinstance(v, str) else repr(v)
+        text = text.strip()
+        return text if len(text) <= limit else text[:limit - 3] + "..."
+
+    def pin_level(self, level: int) -> None:
+        """Snapshot the rules that solved `level` (called by the agent when a level completes).
+        A trim can drop every turn in which those rules were learned; the snapshot cannot be
+        dropped, so the next level never starts from scratch."""
+        rules = self.rules_text()
+        if not rules:
+            return
+        entry = f"Level {level} solved with rules: {rules}"
+        if self.pinned and self.pinned[-1].startswith(f"Level {level} solved"):
+            self.pinned[-1] = entry
+        else:
+            self.pinned.append(entry)
+
+    def pinned_block(self, limit: int = PINNED_CHARS) -> str:
+        """Text for the opener: latest solved-level snapshot plus the current rules, if any.
+        Older snapshots are kept only while they fit in `limit`."""
+        current = self.rules_text()
+        parts: list[str] = []
+        if current:
+            parts.append("Rules you have written down (memory['rules']): " + current)
+        snaps = list(self.pinned)
+        if snaps and snaps[-1].endswith(current) and current:
+            snaps = snaps[:-1]      # identical to the current rules: no point repeating it
+        for snap in reversed(snaps):
+            if sum(len(p) for p in parts) + len(snap) > limit:
+                break
+            parts.append(snap)
+        return "\n".join(parts)
 
     def evidence(self) -> dict:
         """Per-level facts for the opener (unclicked objects, blocked moves, novelty), from the
