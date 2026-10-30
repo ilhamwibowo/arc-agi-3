@@ -89,8 +89,10 @@ def build_components(mode: str, base_url: str, env_dir: str, api_key: str, llm_u
             if game_id.startswith(prefix):
                 fields.update(values)
         say(f"{game_id}: agent overrides {fields}" if fields else f"{game_id}: default agent config")
-        return Agent(LLMClient(base_url=llm_url, model=model_name), AgentConfig(**fields),
-                     gate=gate, progress=progress)
+        # ARC3_LLM_API_KEY: a hosted OpenAI-compatible endpoint (local A/B runs); unset on Kaggle.
+        llm = LLMClient(base_url=llm_url, model=model_name,
+                        api_key=os.environ.get("ARC3_LLM_API_KEY", "EMPTY"))
+        return Agent(llm, AgentConfig(**fields), gate=gate, progress=progress)
     return arena, make_session, agent_factory
 
 
