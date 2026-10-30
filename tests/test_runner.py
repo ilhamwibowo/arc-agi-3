@@ -249,3 +249,37 @@ def test_keeper_passes_to_first_game_with_a_working_env(tmp_path):
     assert summary["errors"] == 1 and summary["ok"] == 1
     resets = [e for e in log if e[1] == "RESET"]
     assert resets and all(e[0] == "second" for e in resets)
+
+
+def test_idle_watchdog_picks_the_game_with_least_to_lose(tmp_path):
+    log = []
+    gate = PriorityGate()
+
+    class Stuck(FakeAgent):
+        def play_game(self, env, deadline):
+            env.step(Action("UP"))
+            time.sleep(1.2)
+            return {}
+
+    class Env2(FakeEnv):
+        levels_completed = 0
+        _actions_since_level_start = 0
+        def would_full_reset(self):
+            return self._actions_since_level_start == 0 and self.levels_completed > 0
+
+    def make(gid):
+        e = Env2(gid, log)
+        if gid == "midlevel":
+            e._actions_since_level_start = 30            # progress on level 1: costly to reset
+        elif gid == "fresh":
+            e._actions_since_level_start = 0             # nothing to lose
+        elif gid == "advanced":
+            e.levels_completed, e._actions_since_level_start = 3, 5
+        return e
+    summary = run_games(["midlevel", "advanced", "fresh"], make, lambda g, p: Stuck(g, p, gate), gate,
+                        total_seconds=3600, per_game_cap_seconds=600, log_dir=tmp_path,
+                        keepalive_seconds=60, idle_keepalive_seconds=0.3, model_ready=lambda: True)
+    assert summary["ok"] == 3
+    first_up = min(e[2] for e in log if e[1] == "UP")
+    resets = [e[0] for e in log if e[1] == "RESET" and e[2] > first_up]
+    assert resets and set(resets) == {"fresh"}, log

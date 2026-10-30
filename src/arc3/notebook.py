@@ -66,6 +66,9 @@ TRUE_SUBMISSION = os.environ.get("KAGGLE_IS_COMPETITION_RERUN", "").strip().lowe
 OFFLINE_SUBSET = __OFFLINE_SUBSET__        # offline only: None=all, int=first n, or list of id prefixes
 PER_GAME_CAP_SECONDS = __PER_GAME_CAP__
 AGENT_OVERRIDES = __AGENT_OVERRIDES__      # {game-id prefix: {AgentConfig field: value}} for A/B runs
+# Save-run shortcut: skip the model server and play nothing (only unpack, install, write the dummy
+# parquet). Never applies in the competition rerun. Used when GPU quota is nearly gone.
+SMOKE_NO_SERVER = __SMOKE_NO_SERVER__ and not TRUE_SUBMISSION
 MAX_ACTIVE = 10
 PORT = 30000
 WORKING = "/kaggle/working"
@@ -160,7 +163,10 @@ def _launch():
             time.sleep(30)
 
 SERVER_THREAD = threading.Thread(target=_launch, name="sglang", daemon=True)
-SERVER_THREAD.start()
+if SMOKE_NO_SERVER:
+    print("SMOKE_NO_SERVER: model server not started (save run only)")
+else:
+    SERVER_THREAD.start()
 '''
 
 CELL_MONITOR = '''\
@@ -175,12 +181,16 @@ CELL_RUN = '''\
 from arc3 import kaggle_main
 RUN_ERROR, RUN_SUMMARY = None, None
 try:
+    if SMOKE_NO_SERVER:
+        raise SystemExit  # caught below: no play in a no-server save run
     RUN_SUMMARY = kaggle_main.main(
         competition=TRUE_SUBMISSION, run_end_epoch=HARD_WALL, log_dir=LOG_DIR,
         llm_url=f"http://127.0.0.1:{PORT}/v1", model_name=ks.SERVED_MODEL_NAME,
         model_ready=lambda: ks.healthy(PORT), offline_subset=OFFLINE_SUBSET,
         per_game_cap_seconds=PER_GAME_CAP_SECONDS, gate=GATE, abort=SERVER_DEAD,
         agent_overrides=AGENT_OVERRIDES)
+except SystemExit:
+    print("SMOKE_NO_SERVER: play skipped", flush=True)
 except BaseException:
     RUN_ERROR = traceback.format_exc()
     print("!!! RUN FAILED !!!\\n" + RUN_ERROR, flush=True)
@@ -218,10 +228,11 @@ def _markdown(src: str) -> dict:
 
 
 def build_notebook(offline_subset=3, per_game_cap_seconds: float = 9 * 3600,
-                   agent_overrides: dict | None = None) -> dict:
+                   agent_overrides: dict | None = None, smoke_no_server: bool = False) -> dict:
     tar_b64, tar_sha = source_tar_b64()
     subs = {"__OFFLINE_SUBSET__": repr(offline_subset), "__PER_GAME_CAP__": repr(per_game_cap_seconds),
             "__AGENT_OVERRIDES__": repr(agent_overrides or {}),
+            "__SMOKE_NO_SERVER__": repr(bool(smoke_no_server)),
             "__BUILD_ID__": tar_sha[:12], "__TAR_B64__": tar_b64, "__TAR_SHA__": tar_sha}
 
     def fill(src: str) -> str:
@@ -271,11 +282,13 @@ def main() -> None:
     ap.add_argument("--per-game-cap-hours", type=float, default=9.0)
     ap.add_argument("--agent-overrides", default="{}",
                     help='JSON {"prefix": {"send_images": false}} applied to matching games')
+    ap.add_argument("--smoke-no-server", action="store_true",
+                    help="save run skips the model server and plays nothing (competition rerun unaffected)")
     args = ap.parse_args()
     subset = args.offline_subset
     subset = None if subset == "all" else int(subset) if subset.isdigit() else subset.split(",")
     out = build(args.name, offline_subset=subset, per_game_cap_seconds=args.per_game_cap_hours * 3600,
-                agent_overrides=json.loads(args.agent_overrides))
+                agent_overrides=json.loads(args.agent_overrides), smoke_no_server=args.smoke_no_server)
     print(f"wrote {out}")
 
 

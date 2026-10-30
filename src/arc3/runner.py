@@ -120,7 +120,16 @@ class _Run:
         gateway, so send one RESET on a game whose RESET cannot wipe completed levels."""
         while not self.stop.is_set() and self.clock() < self.run_end:
             if self.first_action.is_set() and self.clock() - self.last_activity >= idle_seconds:
-                for game_id, env in list(self.envs.items()):
+                # Cheapest victim first: a RESET restarts the current level, so prefer a game with
+                # nothing to lose (no completed levels and no actions on its level), then the game
+                # with the fewest actions on its level among those with no completed levels, then
+                # any game whose RESET cannot wipe completed levels.
+                def cost(item):
+                    env = item[1]
+                    done = int(getattr(env, "levels_completed", 0) or 0)
+                    acted = int(getattr(env, "_actions_since_level_start", 0) or 0)
+                    return (done > 0, acted)
+                for game_id, env in sorted(self.envs.items(), key=cost):
                     try:
                         wipes = getattr(env, "would_full_reset", None)
                         if callable(wipes) and wipes():

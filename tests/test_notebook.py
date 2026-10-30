@@ -53,3 +53,19 @@ def test_cells_in_order_and_server_always_stopped():
     assert [h.split(".")[0] for h in headers] == [f"# {i}" for i in range(9)]
     assert "stop_server" in sources[-1]
     assert "--no-index" in sources[2]
+
+
+def test_smoke_no_server_flag_never_applies_in_competition(tmp_path):
+    """The no-server save-run shortcut must be ANDed with `not TRUE_SUBMISSION` in the config cell,
+    guard both the server launch and the play call, and default to off."""
+    from arc3.notebook import build_notebook
+    nb = build_notebook(offline_subset=1, per_game_cap_seconds=180, smoke_no_server=True)
+    src = "\n".join("".join(c["source"]) if isinstance(c["source"], list) else c["source"]
+                    for c in nb["cells"])
+    assert "SMOKE_NO_SERVER = True and not TRUE_SUBMISSION" in src
+    assert "if SMOKE_NO_SERVER:\n    print(\"SMOKE_NO_SERVER: model server not started" in src
+    assert "if SMOKE_NO_SERVER:\n        raise SystemExit" in src
+    nb2 = build_notebook(offline_subset=1, per_game_cap_seconds=180)
+    src2 = "\n".join("".join(c["source"]) if isinstance(c["source"], list) else c["source"]
+                     for c in nb2["cells"])
+    assert "SMOKE_NO_SERVER = False and not TRUE_SUBMISSION" in src2
