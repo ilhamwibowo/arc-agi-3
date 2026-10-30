@@ -48,7 +48,20 @@ CELL_SETUP = '''\
 # 0. Mode, budget, configuration
 import os, sys, time, threading, traceback
 NOTEBOOK_START = time.time()
-HARD_WALL = NOTEBOOK_START + 9 * 3600 - 300   # Kaggle limit minus container start-up; games end 15 min earlier
+# Kaggle's 9 h limit counts from CONTAINER start, and in reruns the first cell runs ~40 min after
+# that (Tufa, 2nd place, forum 753843, Oct 29: "the notebook itself starts only ~40 minutes after
+# the container starts ... these 40 minutes count against submission"). /proc/uptime is the
+# container's age, so the wall is anchored to it; the runner still ends games 15 min before it.
+def _container_start():
+    try:
+        with open("/proc/uptime") as f:
+            return time.time() - float(f.read().split()[0])
+    except Exception:
+        return NOTEBOOK_START
+CONTAINER_START = _container_start()
+HARD_WALL = CONTAINER_START + 9 * 3600 - 300
+print(f"container age at notebook start: {NOTEBOOK_START - CONTAINER_START:.0f}s; "
+      f"wall in {(HARD_WALL - NOTEBOOK_START) / 60:.0f} min")
 TRUE_SUBMISSION = os.environ.get("KAGGLE_IS_COMPETITION_RERUN", "").strip().lower() in {"1", "true"}
 OFFLINE_SUBSET = __OFFLINE_SUBSET__        # offline only: None=all, int=first n, or list of id prefixes
 PER_GAME_CAP_SECONDS = __PER_GAME_CAP__
