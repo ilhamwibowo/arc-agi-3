@@ -29,6 +29,27 @@ def say(msg: str) -> None:
     print(f"[arc3 {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def start_local_gateway(env_dir: str, recordings_dir: str, port: int = 8001):
+    """Serve `env_dir` through the toolkit's own HTTP gateway in competition mode, in a daemon
+    thread. Returns the server (call .shutdown()). Experiments only: the rerun's code path
+    (HTTP client, scorecard open/close, keeper, retries) with logs we can read."""
+    import logging
+    import threading
+    from arc_agi import Arcade, OperationMode
+    from arc_agi.server import create_app
+    from werkzeug.serving import make_server
+    quiet = logging.getLogger("arc3-local-gateway")
+    quiet.setLevel(logging.ERROR)
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    arcade = Arcade(operation_mode=OperationMode.OFFLINE, environments_dir=str(env_dir),
+                    recordings_dir=str(recordings_dir), logger=quiet)
+    app, _ = create_app(arcade, competition_mode=True)
+    server = make_server("127.0.0.1", port, app, threaded=True)
+    threading.Thread(target=server.serve_forever, name="local-gateway", daemon=True).start()
+    say(f"local competition gateway on 127.0.0.1:{port} over {env_dir}")
+    return server
+
+
 def wait_for_gateway(base_url: str, timeout: float = 2400.0) -> None:
     """Poll <base>/api/games until it answers (<500) or fail loudly. 40 min: the Oct 2026 platform
     incident had gateway DNS failing for >10 min while weights loaded; a run that gives up scores 0."""

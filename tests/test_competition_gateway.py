@@ -173,3 +173,19 @@ def test_wait_for_gateway_accepts_4xx(monkeypatch):
         raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
     monkeypatch.setattr(kaggle_main.urllib.request, "urlopen", raise_404)
     kaggle_main.wait_for_gateway("http://127.0.0.1:1/", timeout=5)
+
+
+def test_start_local_gateway_serves_competition_mode(tmp_path):
+    """The notebook's experiment gateway lists the games and opens a competition scorecard."""
+    from arc3 import kaggle_main
+    from arc3.env import Arena
+    server = kaggle_main.start_local_gateway(str(ENV_DIR), str(tmp_path / "rec"), port=0)
+    try:
+        base = f"http://127.0.0.1:{server.server_port}/"
+        kaggle_main.wait_for_gateway(base, timeout=20)
+        arena = Arena(mode="competition", base_url=base, api_key="test-key-123",
+                      recordings_dir=tmp_path / "client")
+        assert len(arena.game_ids()) == 25
+        assert arena.open_scorecard() and arena.close_scorecard() is not None
+    finally:
+        server.shutdown()

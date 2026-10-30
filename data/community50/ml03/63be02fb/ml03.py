@@ -1,0 +1,509 @@
+"""Mirror laser — **ml03** (fragile mirrors).
+
+**Win:** Same as **ml02** — one shot must visit **every** yellow receptor; beam passes through
+receptors.
+
+**Difference vs ml02:** Every mirror the beam **reflects from** is **removed** after that
+shot (win or lose). Plan for **disposable** optics; failed fires permanently change the board.
+
+**Vs ml01:** **ml01** uses **global** mirror clicks. **ml02**/**ml03** use a **blue technician**:
+**ACTION1–4** move; **ACTION6** only on cells **orthogonally adjacent** to the technician.
+"""
+
+from __future__ import annotations
+
+from arcengine import (
+    ARCBaseGame,
+    Camera,
+    GameAction,
+    Level,
+    RenderableUserDisplay,
+    Sprite,
+)
+
+BACKGROUND_COLOR = 5
+PADDING_COLOR = 4
+CAM_W = CAM_H = 24
+
+WALL_C = 3
+PLAYER_C = 9
+HAZ_C = 8
+EMIT_C = 12
+GOAL_C = 11
+MIR_SL = 15
+MIR_BS = 7
+
+BEAM_FX_FRAMES = 12
+BEAM_CELL_C = 12
+
+
+class Ml03UI(RenderableUserDisplay):
+    """HUD + red **fragile** cue (ml02 has no red corner — helps tell GIFs apart)."""
+
+    def __init__(self, inv: int, steps: int) -> None:
+        self._inv = inv
+        self._steps = steps
+        self._grid_w = CAM_W
+        self._grid_h = CAM_H
+        self._beam_cells: set[tuple[int, int]] = set()
+        self._beam_fx_frames = 0
+
+    def update(
+        self,
+        inv: int,
+        steps: int,
+        *,
+        grid_wh: tuple[int, int] | None = None,
+        beam_cells: set[tuple[int, int]] | None = None,
+        beam_fx_frames: int | None = None,
+    ) -> None:
+        self._inv = inv
+        self._steps = steps
+        if grid_wh is not None:
+            self._grid_w, self._grid_h = grid_wh
+        if beam_cells is not None:
+            self._beam_cells = beam_cells
+        if beam_fx_frames is not None:
+            self._beam_fx_frames = beam_fx_frames
+
+    @staticmethod
+    def _paint_cell(
+        frame, fh: int, fw: int, gx: int, gy: int, gw: int, gh: int, color: int
+    ) -> None:
+        scale_x = 64 // gw
+        scale_y = 64 // gh
+        scale = min(scale_x, scale_y)
+        x_pad = (fw - (gw * scale)) // 2
+        y_pad = (fh - (gh * scale)) // 2
+        x0 = x_pad + gx * scale
+        y0 = y_pad + gy * scale
+        for sy in range(scale):
+            for sx in range(scale):
+                fx, fy = x0 + sx, y0 + sy
+                if 0 <= fx < fw and 0 <= fy < fh:
+                    frame[fy, fx] = color
+
+    def render_interface(self, frame):
+        import numpy as np
+
+        if not isinstance(frame, np.ndarray):
+            return frame
+        h, w = frame.shape
+        gw, gh = self._grid_w, self._grid_h
+        if self._beam_fx_frames > 0:
+            for cell in self._beam_cells:
+                self._paint_cell(frame, h, w, cell[0], cell[1], gw, gh, BEAM_CELL_C)
+        for i in range(min(self._inv, 10)):
+            frame[h - 2, 1 + i] = 15
+        for i in range(min(self._steps, 30)):
+            frame[h - 1, 1 + i] = 10
+        if w > 3 and h > 4:
+            frame[h - 4, w - 2] = 8
+            frame[h - 3, w - 3] = 8
+        return frame
+
+
+sprites = {
+    "wall": Sprite(
+        pixels=[[WALL_C]],
+        name="wall",
+        visible=True,
+        collidable=True,
+        tags=["wall"],
+    ),
+    "hazard": Sprite(
+        pixels=[[HAZ_C]],
+        name="hazard",
+        visible=True,
+        collidable=True,
+        tags=["hazard"],
+    ),
+    "player": Sprite(
+        pixels=[[PLAYER_C]],
+        name="player",
+        visible=True,
+        collidable=True,
+        tags=["player"],
+    ),
+    "emitter": Sprite(
+        pixels=[[EMIT_C]],
+        name="emitter",
+        visible=True,
+        collidable=False,
+        tags=["emitter"],
+    ),
+    "receptor": Sprite(
+        pixels=[[GOAL_C]],
+        name="receptor",
+        visible=True,
+        collidable=False,
+        tags=["receptor"],
+    ),
+    "m_slash": Sprite(
+        pixels=[[MIR_SL]],
+        name="m_slash",
+        visible=True,
+        collidable=True,
+        tags=["mirror", "slash"],
+    ),
+    "m_bslash": Sprite(
+        pixels=[[MIR_BS]],
+        name="m_bslash",
+        visible=True,
+        collidable=True,
+        tags=["mirror", "bslash"],
+    ),
+}
+
+
+def mk(
+    grid: tuple[int, int],
+    walls: list[tuple[int, int]],
+    hazards: list[tuple[int, int]],
+    player: tuple[int, int],
+    emitter: tuple[int, int],
+    emit_dxdy: tuple[int, int],
+    receptors: list[tuple[int, int]],
+    preset_mirrors: list[tuple[int, int, str]],
+    inv: int,
+    max_steps: int,
+    diff: int,
+) -> Level:
+    sl: list[Sprite] = []
+    for wx, wy in walls:
+        sl.append(sprites["wall"].clone().set_position(wx, wy))
+    for hx, hy in hazards:
+        sl.append(sprites["hazard"].clone().set_position(hx, hy))
+    sl.append(sprites["player"].clone().set_position(player[0], player[1]))
+    sl.append(sprites["emitter"].clone().set_position(emitter[0], emitter[1]))
+    for rx, ry in receptors:
+        sl.append(sprites["receptor"].clone().set_position(rx, ry))
+    for mx, my, kind in preset_mirrors:
+        sp = (
+            sprites["m_slash"].clone()
+            if kind == "/"
+            else sprites["m_bslash"].clone()
+        )
+        sl.append(sp.set_position(mx, my))
+    return Level(
+        sprites=sl,
+        grid_size=grid,
+        data={
+            "difficulty": diff,
+            "emit_dx": emit_dxdy[0],
+            "emit_dy": emit_dxdy[1],
+            "mirror_inv": inv,
+            "max_steps": max_steps,
+        },
+    )
+
+
+levels = [
+    # Same geometry as ml02; ml03 removes mirrors used by the beam after each fire.
+    mk(
+        (24, 24),
+        [(10, y) for y in range(24) if y != 12],
+        [],
+        (4, 11),
+        (4, 12),
+        (1, 0),
+        [(18, 12), (21, 12)],
+        [],
+        4,
+        200,
+        1,
+    ),
+    mk(
+        (24, 24),
+        [(11, y) for y in range(24) if y != 12],
+        [],
+        (4, 11),
+        (4, 12),
+        (1, 0),
+        [(19, 12), (22, 12)],
+        [],
+        4,
+        220,
+        2,
+    ),
+    # L3 — same mirror solve as ml02: (7,12)/ (7,6)/ (19,6)\\ then fire (mirrors vanish).
+    mk(
+        (24, 24),
+        [(x, 12) for x in range(8, 15)],
+        [],
+        (3, 11),
+        (3, 12),
+        (1, 0),
+        [(19, 12), (19, 7)],
+        [],
+        6,
+        300,
+        3,
+    ),
+    mk(
+        (24, 24),
+        [(14, y) for y in range(24) if y != 12],
+        [],
+        (4, 11),
+        (4, 12),
+        (1, 0),
+        [(18, 12), (21, 12)],
+        [],
+        4,
+        200,
+        4,
+    ),
+    mk(
+        (24, 24),
+        [(16, y) for y in range(24) if y != 12],
+        [],
+        (6, 11),
+        (6, 12),
+        (1, 0),
+        [(18, 12), (21, 12)],
+        [],
+        4,
+        200,
+        5,
+    ),
+]
+
+
+def _reflect(dx: int, dy: int, slash: bool) -> tuple[int, int]:
+    if slash:
+        return (-dy, -dx)
+    return (dy, dx)
+
+
+class Ml03(ARCBaseGame):
+    def __init__(self) -> None:
+        self._ui = Ml03UI(0, 0)
+        self._beam_cells: set[tuple[int, int]] = set()
+        self._beam_fx_frames = 0
+        super().__init__(
+            "ml03",
+            levels,
+            Camera(0, 0, CAM_W, CAM_H, BACKGROUND_COLOR, PADDING_COLOR, [self._ui]),
+            False,
+            1,
+            [1, 2, 3, 4, 5, 6],
+        )
+
+    def on_set_level(self, level: Level) -> None:
+        self._player = self.current_level.get_sprites_by_tag("player")[0]
+        em = self.current_level.get_sprites_by_tag("emitter")[0]
+        self._emit = (em.x, em.y)
+        self._receptors = {
+            (s.x, s.y) for s in self.current_level.get_sprites_by_tag("receptor")
+        }
+        edx_raw = self.current_level.get_data("emit_dx")
+        edy_raw = self.current_level.get_data("emit_dy")
+        self._edx = int(edx_raw) if edx_raw is not None else 1
+        self._edy = int(edy_raw) if edy_raw is not None else 0
+        mi = self.current_level.get_data("mirror_inv")
+        self._inv = int(mi) if mi is not None else 6
+        ms = self.current_level.get_data("max_steps")
+        self._steps = int(ms) if ms is not None else 250
+        self._beam_cells = set()
+        self._beam_fx_frames = 0
+        self._sync_ui()
+
+    def _sync_ui(self) -> None:
+        gw, gh = self.current_level.grid_size
+        self._ui.update(
+            self._inv,
+            self._steps,
+            grid_wh=(gw, gh),
+            beam_cells=set(self._beam_cells),
+            beam_fx_frames=self._beam_fx_frames,
+        )
+
+    def _burn(self) -> bool:
+        self._steps -= 1
+        self._sync_ui()
+        if self._steps <= 0:
+            self.lose()
+            return True
+        return False
+
+    def _mirror_at(self, x: int, y: int):
+        sp = self.current_level.get_sprite_at(x, y, ignore_collidable=True)
+        if sp and "mirror" in sp.tags:
+            return sp
+        return None
+
+    def _fire_laser(self) -> None:
+        x, y = self._emit[0] + self._edx, self._emit[1] + self._edy
+        dx, dy = self._edx, self._edy
+        gw, gh = self.current_level.grid_size
+        hit: set[tuple[int, int]] = set()
+        mirrors_used: list[Sprite] = []
+        beam_trace: list[tuple[int, int]] = []
+        for _ in range(gw * gh + 10):
+            if not (0 <= x < gw and 0 <= y < gh):
+                break
+            beam_trace.append((x, y))
+            if self.current_level.get_sprite_at(
+                x, y, tag="receptor", ignore_collidable=True
+            ):
+                hit.add((x, y))
+                x += dx
+                y += dy
+                continue
+            sp = self.current_level.get_sprite_at(x, y, ignore_collidable=True)
+            if sp and "wall" in sp.tags:
+                break
+            if sp and "hazard" in sp.tags:
+                break
+            if sp and "mirror" in sp.tags:
+                mirrors_used.append(sp)
+                slash = "slash" in sp.tags
+                dx, dy = _reflect(dx, dy, slash)
+                x += dx
+                y += dy
+                continue
+            if sp and "emitter" in sp.tags:
+                x += dx
+                y += dy
+                continue
+            if sp and "player" in sp.tags:
+                x += dx
+                y += dy
+                continue
+            x += dx
+            y += dy
+        self._beam_cells = set(beam_trace)
+        self._beam_fx_frames = BEAM_FX_FRAMES
+        for m in mirrors_used:
+            self.current_level.remove_sprite(m)
+        if self._receptors and hit >= self._receptors:
+            self.next_level()
+
+    def step(self) -> None:
+        if self._beam_fx_frames > 0:
+            self._beam_fx_frames -= 1
+            if self._beam_fx_frames == 0:
+                self._beam_cells.clear()
+        self._sync_ui()
+
+        aid = self.action.id
+
+        if aid in (GameAction.ACTION1, GameAction.ACTION2, GameAction.ACTION3, GameAction.ACTION4):
+            dx = dy = 0
+            if aid == GameAction.ACTION1:
+                dy = -1
+            elif aid == GameAction.ACTION2:
+                dy = 1
+            elif aid == GameAction.ACTION3:
+                dx = -1
+            elif aid == GameAction.ACTION4:
+                dx = 1
+            nx, ny = self._player.x + dx, self._player.y + dy
+            gw, gh = self.current_level.grid_size
+            if 0 <= nx < gw and 0 <= ny < gh:
+                sp = self.current_level.get_sprite_at(nx, ny, ignore_collidable=True)
+                if sp and ("wall" in sp.tags or "mirror" in sp.tags):
+                    pass
+                elif sp and "hazard" in sp.tags:
+                    self.lose()
+                    self._sync_ui()
+                    self.complete_action()
+                    return
+                elif not sp or not sp.is_collidable:
+                    self._player.set_position(nx, ny)
+                elif "emitter" in sp.tags or "receptor" in sp.tags:
+                    self._player.set_position(nx, ny)
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self._sync_ui()
+            self.complete_action()
+            return
+
+        if aid == GameAction.ACTION5:
+            self._fire_laser()
+            self._sync_ui()
+            if self._burn():
+                self.complete_action()
+                return
+            self.complete_action()
+            return
+
+        if aid != GameAction.ACTION6:
+            self.complete_action()
+            return
+
+        px = self.action.data.get("x", 0)
+        py = self.action.data.get("y", 0)
+        coords = self.camera.display_to_grid(px, py)
+        if coords is None:
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self.complete_action()
+            return
+        gx, gy = coords
+        if abs(gx - self._player.x) + abs(gy - self._player.y) != 1:
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self.complete_action()
+            return
+        gw, gh = self.current_level.grid_size
+        if not (0 <= gx < gw and 0 <= gy < gh):
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self.complete_action()
+            return
+
+        existing = self.current_level.get_sprite_at(gx, gy, ignore_collidable=True)
+        if existing and "mirror" in existing.tags:
+            slash = "slash" in existing.tags
+            self.current_level.remove_sprite(existing)
+            new_sp = (
+                sprites["m_bslash"].clone().set_position(gx, gy)
+                if slash
+                else sprites["m_slash"].clone().set_position(gx, gy)
+            )
+            self.current_level.add_sprite(new_sp)
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self._sync_ui()
+            self.complete_action()
+            return
+
+        if existing and (
+            "wall" in existing.tags
+            or "hazard" in existing.tags
+            or "emitter" in existing.tags
+            or "receptor" in existing.tags
+        ):
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self.complete_action()
+            return
+
+        if self._inv <= 0:
+            if self._burn():
+                self._sync_ui()
+                self.complete_action()
+                return
+            self.complete_action()
+            return
+
+        self.current_level.add_sprite(sprites["m_slash"].clone().set_position(gx, gy))
+        self._inv -= 1
+        self._sync_ui()
+        if self._burn():
+            self.complete_action()
+            return
+        self.complete_action()

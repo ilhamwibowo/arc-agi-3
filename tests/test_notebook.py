@@ -33,7 +33,9 @@ def test_embedded_source_cell_unpacks_identical_tree(tmp_path):
     dest.mkdir()
     saved_path = list(sys.path)
     try:
-        exec(compile(cell, "source-cell", "exec"), {"ARC3_ROOT": str(dest)})
+        exec(compile(cell, "source-cell", "exec"),
+             {"ARC3_ROOT": str(dest), "COMPETITION_DIR": str(tmp_path / "comp"),
+              "WORKING": str(tmp_path), "EXTRA_ENVS": None})
     finally:
         sys.path[:] = saved_path
     expected = {p.relative_to(SRC) for p in SRC.rglob("*.py") if "__pycache__" not in p.parts}
@@ -69,3 +71,32 @@ def test_smoke_no_server_flag_never_applies_in_competition(tmp_path):
     src2 = "\n".join("".join(c["source"]) if isinstance(c["source"], list) else c["source"]
                      for c in nb2["cells"])
     assert "SMOKE_NO_SERVER = False and not TRUE_SUBMISSION" in src2
+
+
+def test_experiment_flags_bundle_envs_and_local_gateway(tmp_path):
+    """--extra-envs bundles a games dir the source cell unpacks to WORKING/envs/<name>;
+    --local-gateway routes play through kaggle_main.start_local_gateway; neither applies in a rerun."""
+    envs = tmp_path / "mini"
+    (envs / "ab01").mkdir(parents=True)
+    (envs / "ab01" / "metadata.json").write_text("{}")
+    nb = notebook.build_notebook(offline_subset=None, local_gateway=True, extra_envs=envs)
+    src = "\n".join(c["source"] for c in nb["cells"])
+    assert "LOCAL_GATEWAY = True and not TRUE_SUBMISSION" in src
+    assert "EXTRA_ENVS = 'mini'" in src
+    assert "competition=TRUE_SUBMISSION or LOCAL_GATEWAY" in src
+    assert "kaggle_main.start_local_gateway(ENV_DIR" in src
+    cell = next(c["source"] for c in nb["cells"] if "ENVS_TAR_B64" in c["source"])
+    dest = tmp_path / "work"
+    dest.mkdir()
+    saved = list(sys.path)
+    try:
+        g = {"ARC3_ROOT": str(dest), "COMPETITION_DIR": "/nonexistent", "WORKING": str(dest),
+             "EXTRA_ENVS": "mini"}
+        exec(compile(cell, "source-cell", "exec"), g)
+    finally:
+        sys.path[:] = saved
+    assert g["ENV_DIR"] == f"{dest}/envs/mini"
+    assert (dest / "envs" / "mini" / "ab01" / "metadata.json").exists()
+    # defaults: no gateway, public games
+    plain = "\n".join(c["source"] for c in notebook.build_notebook()["cells"])
+    assert "LOCAL_GATEWAY = False and not TRUE_SUBMISSION" in plain and "EXTRA_ENVS = None" in plain

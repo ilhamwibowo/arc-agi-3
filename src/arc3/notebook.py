@@ -28,14 +28,14 @@ DOCKER_IMAGE = ("gcr.io/kaggle-private-byod/python@sha256:"
                 "57e612b484cf3df5026ee4dcc3cb176974b22b2bc0937fb1e16132a8be4cb13c")
 
 
-def source_tar_b64(src: Path = SRC) -> tuple[str, str]:
-    """Deterministic tar.gz of the package (no caches); returns (base64, sha256 of the bytes)."""
+def source_tar_b64(src: Path = SRC, arcroot: str = "arc3") -> tuple[str, str]:
+    """Deterministic tar.gz of a directory (no caches); returns (base64, sha256 of the bytes)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=9) as tar:
         for path in sorted(src.rglob("*")):
             if "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo") or not path.is_file():
                 continue
-            info = tar.gettarinfo(str(path), arcname=str(Path("arc3") / path.relative_to(src)))
+            info = tar.gettarinfo(str(path), arcname=str(Path(arcroot) / path.relative_to(src)))
             info.mtime, info.uid, info.gid, info.uname, info.gname = 0, 0, 0, "", ""
             with path.open("rb") as f:
                 tar.addfile(info, f)
@@ -69,6 +69,11 @@ AGENT_OVERRIDES = __AGENT_OVERRIDES__      # {game-id prefix: {AgentConfig field
 # Save-run shortcut: skip the model server and play nothing (only unpack, install, write the dummy
 # parquet). Never applies in the competition rerun. Used when GPU quota is nearly gone.
 SMOKE_NO_SERVER = __SMOKE_NO_SERVER__ and not TRUE_SUBMISSION
+# Experiments (never in the rerun): LOCAL_GATEWAY plays through a local copy of the competition
+# gateway in competition mode (the exact code path of a rerun, with logs); EXTRA_ENVS swaps the
+# game set for one bundled in the notebook (e.g. community games as a hidden-like validation set).
+LOCAL_GATEWAY = __LOCAL_GATEWAY__ and not TRUE_SUBMISSION
+EXTRA_ENVS = __EXTRA_ENVS__          # None, or the bundled environments dir name
 MAX_ACTIVE = 10
 PORT = 30000
 WORKING = "/kaggle/working"
@@ -100,6 +105,14 @@ with tarfile.open(fileobj=io.BytesIO(_data), mode="r:gz") as _tar:
 if ARC3_ROOT not in sys.path:
     sys.path.insert(0, ARC3_ROOT)
 print("arc3 source:", sorted(p.name for p in (Path(ARC3_ROOT) / "arc3").iterdir()))
+ENVS_TAR_B64 = "__ENVS_TAR_B64__"
+ENV_DIR = f"{COMPETITION_DIR}/environment_files"
+if EXTRA_ENVS and ENVS_TAR_B64:
+    ENV_DIR = f"{WORKING}/envs/{EXTRA_ENVS}"
+    shutil.rmtree(ENV_DIR, ignore_errors=True)
+    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(ENVS_TAR_B64)), mode="r:gz") as _tar:
+        _tar.extractall(f"{WORKING}/envs", filter="data")
+    print("bundled environments:", EXTRA_ENVS, len(list(Path(ENV_DIR).iterdir())), "games")
 '''
 
 CELL_PIP = '''\
@@ -180,20 +193,30 @@ CELL_RUN = '''\
 # 6. Play: competition gateway (rerun) or bundled environment files (offline)
 from arc3 import kaggle_main
 RUN_ERROR, RUN_SUMMARY = None, None
+GATEWAY = None
 try:
     if SMOKE_NO_SERVER:
         raise SystemExit  # caught below: no play in a no-server save run
+    if LOCAL_GATEWAY:
+        # The toolkit's own competition gateway, in-process, over ENV_DIR: the rerun's code path
+        # (HTTP client, scorecard, keeper, retries) with logs we can read.
+        GATEWAY = kaggle_main.start_local_gateway(ENV_DIR, f"{WORKING}/gateway-rec", port=8001)
+        os.environ["ARC_BASE_URL"] = "http://127.0.0.1:8001/"
+        os.environ["ARC_API_KEY"] = "test-key-123"
     RUN_SUMMARY = kaggle_main.main(
-        competition=TRUE_SUBMISSION, run_end_epoch=HARD_WALL, log_dir=LOG_DIR,
+        competition=TRUE_SUBMISSION or LOCAL_GATEWAY, run_end_epoch=HARD_WALL, log_dir=LOG_DIR,
         llm_url=f"http://127.0.0.1:{PORT}/v1", model_name=ks.SERVED_MODEL_NAME,
         model_ready=lambda: ks.healthy(PORT), offline_subset=OFFLINE_SUBSET,
         per_game_cap_seconds=PER_GAME_CAP_SECONDS, gate=GATE, abort=SERVER_DEAD,
-        agent_overrides=AGENT_OVERRIDES)
+        agent_overrides=AGENT_OVERRIDES, env_dir=ENV_DIR)
 except SystemExit:
     print("SMOKE_NO_SERVER: play skipped", flush=True)
 except BaseException:
     RUN_ERROR = traceback.format_exc()
     print("!!! RUN FAILED !!!\\n" + RUN_ERROR, flush=True)
+finally:
+    if GATEWAY is not None:
+        GATEWAY.shutdown()
 '''
 
 CELL_SUBMISSION = '''\
@@ -228,11 +251,18 @@ def _markdown(src: str) -> dict:
 
 
 def build_notebook(offline_subset=3, per_game_cap_seconds: float = 9 * 3600,
-                   agent_overrides: dict | None = None, smoke_no_server: bool = False) -> dict:
+                   agent_overrides: dict | None = None, smoke_no_server: bool = False,
+                   local_gateway: bool = False, extra_envs: Path | None = None) -> dict:
     tar_b64, tar_sha = source_tar_b64()
+    envs_b64, envs_name = "", None
+    if extra_envs is not None:
+        envs_name = Path(extra_envs).name
+        envs_b64, _ = source_tar_b64(Path(extra_envs), arcroot=envs_name)
     subs = {"__OFFLINE_SUBSET__": repr(offline_subset), "__PER_GAME_CAP__": repr(per_game_cap_seconds),
             "__AGENT_OVERRIDES__": repr(agent_overrides or {}),
             "__SMOKE_NO_SERVER__": repr(bool(smoke_no_server)),
+            "__LOCAL_GATEWAY__": repr(bool(local_gateway)),
+            "__EXTRA_ENVS__": repr(envs_name), "__ENVS_TAR_B64__": envs_b64,
             "__BUILD_ID__": tar_sha[:12], "__TAR_B64__": tar_b64, "__TAR_SHA__": tar_sha}
 
     def fill(src: str) -> str:
@@ -284,11 +314,17 @@ def main() -> None:
                     help='JSON {"prefix": {"send_images": false}} applied to matching games')
     ap.add_argument("--smoke-no-server", action="store_true",
                     help="save run skips the model server and plays nothing (competition rerun unaffected)")
+    ap.add_argument("--local-gateway", action="store_true",
+                    help="experiment: play via an in-process competition gateway (rerun code path)")
+    ap.add_argument("--extra-envs", default=None,
+                    help="experiment: bundle this environments dir and play it instead of the public games")
     args = ap.parse_args()
     subset = args.offline_subset
     subset = None if subset == "all" else int(subset) if subset.isdigit() else subset.split(",")
     out = build(args.name, offline_subset=subset, per_game_cap_seconds=args.per_game_cap_hours * 3600,
-                agent_overrides=json.loads(args.agent_overrides), smoke_no_server=args.smoke_no_server)
+                agent_overrides=json.loads(args.agent_overrides), smoke_no_server=args.smoke_no_server,
+                local_gateway=args.local_gateway,
+                extra_envs=Path(args.extra_envs) if args.extra_envs else None)
     print(f"wrote {out}")
 
 

@@ -1,0 +1,35 @@
+{
+  "game_id": "dd01-63be02fb",
+  "title": "Routed Delivery",
+  "description": "48\u00d748 logistics grid. Colored parcels are orders for matching customers (same color). Per-order SLA deadlines; global step budget. ACTION1\u20134 move; ACTION5 pickup, drop on matching customer only, or ping nearest relevant stop (target customer if carrying, else nearest parcel).",
+  "default_fps": 20,
+  "baseline_actions": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "tags": [
+    "static",
+    "logistics",
+    "48-grid"
+  ],
+  "local_dir": "environment_files/dd01/63be02fb",
+  "date_created": "2026-03-20",
+  "training_metadata": {
+    "pcg_type": [],
+    "grid_range": [
+      48
+    ],
+    "action_space": 5,
+    "physics_rules": [
+      "pickup-deliver",
+      "typed-destinations",
+      "per-order-deadlines"
+    ],
+    "reward_structure": "checkpoint-on-level-pass",
+    "episode_count": 1000000
+  },
+  "date_downloaded": "2026-03-20T09:53:23.281286+00:00"
+}
